@@ -7,7 +7,7 @@
 #include <SPI.h>
 #include <stdint.h>
 #include "core/diag/log.h"
-#include "t2001_types.h"
+#include "core/epd/t2001/t2001_types.h"
 
 namespace epd::t2001 {
 

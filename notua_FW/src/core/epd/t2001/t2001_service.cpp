@@ -1,5 +1,5 @@
 // src/epd/t2001/t2001_service.cpp
-#include "t2001_service.h"
+#include "core/epd/t2001/t2001_service.h"
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
@@ -9,14 +9,14 @@
 #include "core/power/boardPower.h"
 #include "core/power/watchdog.h"
 #include "core/runtime/longOpPump.h"
-#include "app/policy/policyParams.h"
-#include "epd/t2001/t2001.h" // epd::t2001::init/deinit/getSysInfo
-#include "epd/t2001/t2001_render.h"
+#include "core/epd/t2001/t2001.h" // epd::t2001::init/deinit/getSysInfo
+#include "core/epd/t2001/t2001_render.h"
 
 namespace epd::t2001::svc {
 
 static constexpr const char* TAG = "T2001_SVC";
-static constexpr uint32_t EPD_MUTEX_TIMEOUT_MS = EPD_DPY_WAIT_TIMEOUT_MS;
+static constexpr uint32_t EPD_MUTEX_TIMEOUT_MS = 120000;
+static constexpr bool EPD_PWR_CYCLE_ENABLE = true;
 
 static State gState = State::UNINIT;
 static Stats gStats {};
@@ -272,7 +272,7 @@ void service_deinit(bool clear_stats) {
     }
 }
 
-/** @brief Retry backoff with WDT/MQTT pump (same pattern as settle / DPY wait). */
+/** @brief Retry backoff while feeding the watchdog and yielding. */
 static void backoffMsPump(uint16_t ms) {
     if (ms == 0)
         return;

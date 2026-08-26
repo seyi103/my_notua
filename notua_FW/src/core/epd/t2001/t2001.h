@@ -3,8 +3,8 @@
  * @brief T2001 EPD 저수준 API (init, transport, power, display)
  */
 #pragma once
-#include "t2001_transport_spi.h"
-#include "t2001_types.h"
+#include "core/epd/t2001/t2001_transport_spi.h"
+#include "core/epd/t2001/t2001_types.h"
 
 namespace epd::t2001 {
 
