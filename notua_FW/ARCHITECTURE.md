@@ -30,14 +30,39 @@ includes use the single PlatformIO `src` include root. For example, driver code 
 | BLE | Future frame transport boundary; deliberately not implemented or initialized yet |
 | Flutter | Future client boundary; no app implementation is part of this firmware change |
 
-The boot application only establishes a safe hardware baseline: it disables the panel rails,
-starts the watchdog, verifies PSRAM, and reports that no frame transport is configured. It does not
-initialize the EPD because there is not yet an image source or application command boundary.
+The boot application mounts LittleFS, validates and sorts up to three `/images/*.bin` Y8 frames,
+loads one 1600 x 1200 frame into PSRAM, and sends it through the existing T2001 service. Its NVS
+index advances only after a successful refresh. It then powers the panel down and enters five-minute
+timer deep sleep. Invalid-size files are logged and skipped; filesystem errors never trigger an
+automatic format.
 
 `scripts/check_offline_dependencies.py` runs before every PlatformIO build. It rejects unresolved
 quoted includes and WiFi, MQTT, HTTP, OTA, or BLE framework headers, preventing either a broken
 local driver dependency or a premature application transport from silently entering the core.
 
-The 16 MB partition table has one factory application slot rather than OTA slots. The data region
-is reserved for a future frame-storage design; no filesystem or transport is mounted by the current
-boot application.
+The 16 MB partition table has one factory application slot rather than OTA slots. Its remaining
+data region is a LittleFS filesystem for local frames; it is not a network transport.
+
+## Preparing and uploading test images
+
+Frames are headerless, row-major Y8 files: one byte per pixel, exactly 1600 x 1200 = 1,920,000
+bytes. Generate two or three deterministic patterns from the firmware directory:
+
+```sh
+cd notua_FW
+python3 scripts/generate_test_images.py --count 3
+```
+
+The generated files land in `data/images/` and are ignored by Git. Connect the ESP32-S3, optionally
+set `upload_port` in `platformio.ini`, then build and upload the LittleFS partition:
+
+```sh
+python3 -m platformio run --target buildfs
+python3 -m platformio run --target uploadfs
+python3 -m platformio run --target upload
+```
+
+Upload the filesystem before firmware on an initially blank device. `uploadfs` replaces the
+filesystem contents. Serial logs at 115200 baud report rejected sizes, the selected path, display
+result, persisted next index, and sleep entry. Panel appearance, rail sequencing, refresh timing,
+and deep-sleep wake behavior still require verification on the actual production board.
