@@ -1,4 +1,4 @@
-#include "t2001_render.h"
+#include "core/epd/t2001/t2001_render.h"
 #include <Arduino.h>
 #include <string.h>
 

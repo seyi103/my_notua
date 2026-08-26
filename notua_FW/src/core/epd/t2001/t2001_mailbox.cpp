@@ -1,5 +1,5 @@
 // src/epd/t2001/t2001_mailbox.cpp
-#include "t2001_mailbox.h"
+#include "core/epd/t2001/t2001_mailbox.h"
 #include <string.h>
 #include "core/diag/log.h"
 

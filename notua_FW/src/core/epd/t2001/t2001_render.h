@@ -6,8 +6,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "t2001_transport_spi.h"
-#include "t2001_types.h"
+#include "core/epd/t2001/t2001_transport_spi.h"
+#include "core/epd/t2001/t2001_types.h"
 
 
 namespace epd::t2001::render {

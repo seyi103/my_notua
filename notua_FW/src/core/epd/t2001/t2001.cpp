@@ -1,13 +1,13 @@
 // src/epd/t2001/t2001.cpp
-#include "t2001.h"
+#include "core/epd/t2001/t2001.h"
 #include <SPI.h>
 #include "core/diag/log.h"
 #include "core/power/watchdog.h"
 #include "core/runtime/longOpPump.h"
-#include "pins.h"
+#include "core/board/pins.h"
 
-#include "t2001_mailbox.h"
-#include "t2001_transport_spi.h"
+#include "core/epd/t2001/t2001_mailbox.h"
+#include "core/epd/t2001/t2001_transport_spi.h"
 
 static SPIClass gSpi(HSPI);
 static epd::t2001::TransportSPI gTr(gSpi);

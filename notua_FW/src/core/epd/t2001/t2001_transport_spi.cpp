@@ -1,5 +1,5 @@
 // src/epd/t2001/t2001_transport_spi.cpp
-#include "t2001_transport_spi.h"
+#include "core/epd/t2001/t2001_transport_spi.h"
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>

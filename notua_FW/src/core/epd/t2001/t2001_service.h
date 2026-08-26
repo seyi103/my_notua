@@ -5,8 +5,8 @@
 #pragma once
 
 #include <stdint.h>
-#include "epd/t2001/t2001.h" // epd::t2001::{Result, Policy, SysInfo, init, deinit, getSysInfo, ok}
-#include "epd/t2001/t2001_render.h"
+#include "core/epd/t2001/t2001.h" // epd::t2001::{Result, Policy, SysInfo, init, deinit, getSysInfo, ok}
+#include "core/epd/t2001/t2001_render.h"
 
 namespace epd::t2001::svc {
 
