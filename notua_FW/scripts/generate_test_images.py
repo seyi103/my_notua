@@ -6,14 +6,34 @@ from pathlib import Path
 
 WIDTH = 1600
 HEIGHT = 1200
+IMAGE_SIZE = WIDTH * HEIGHT
+SPECTRA_6_Y8_PALETTE = (0x00, 0xF8, 0x20, 0x40, 0x10, 0x30)
+PALETTE_BYTES = frozenset(SPECTRA_6_Y8_PALETTE)
 
 
 def pixel(pattern: int, x: int, y: int) -> int:
     if pattern == 0:
-        return x * 255 // (WIDTH - 1)
+        return SPECTRA_6_Y8_PALETTE[x * len(SPECTRA_6_Y8_PALETTE) // WIDTH]
     if pattern == 1:
-        return 32 if ((x // 100) + (y // 100)) % 2 == 0 else 224
-    return (x // 50 * 37 + y // 50 * 19) % 256
+        return SPECTRA_6_Y8_PALETTE[((x // 100) + (y // 100)) % 2]
+    palette_index = (x // 50 * 37 + y // 50 * 19) % len(SPECTRA_6_Y8_PALETTE)
+    return SPECTRA_6_Y8_PALETTE[palette_index]
+
+
+def validate_image(path: Path) -> None:
+    """Raise ValueError unless path is one complete palette-only Y8 frame."""
+    size = path.stat().st_size
+    if size != IMAGE_SIZE:
+        raise ValueError(f"{path} is {size} bytes; expected {IMAGE_SIZE}")
+
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(64 * 1024), b""):
+            invalid = set(chunk) - PALETTE_BYTES
+            if invalid:
+                values = ", ".join(f"0x{value:02X}" for value in sorted(invalid))
+                raise ValueError(
+                    f"{path} contains values outside the Spectra 6 Y8 palette: {values}"
+                )
 
 
 def main() -> None:
@@ -28,7 +48,8 @@ def main() -> None:
         with path.open("wb") as stream:
             for y in range(HEIGHT):
                 stream.write(bytes(pixel(pattern, x, y) for x in range(WIDTH)))
-        print(f"wrote {path} ({path.stat().st_size} bytes)")
+        validate_image(path)
+        print(f"wrote and verified {path} ({path.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":

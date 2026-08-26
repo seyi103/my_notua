@@ -46,14 +46,17 @@ data region is a LittleFS filesystem for local frames; it is not a network trans
 ## Preparing and uploading test images
 
 Frames are headerless, row-major Y8 files: one byte per pixel, exactly 1600 x 1200 = 1,920,000
-bytes. Generate two or three deterministic patterns from the firmware directory:
+bytes. Their pixels use only the Spectra 6 Y8 palette values `0x00`, `0xF8`, `0x20`, `0x40`,
+`0x10`, and `0x30`. Generate two or three deterministic patterns from the firmware directory:
 
 ```sh
 cd notua_FW
 python3 scripts/generate_test_images.py --count 3
 ```
 
-The generated files land in `data/images/` and are ignored by Git. Connect the ESP32-S3, optionally
+The generator verifies every output is exactly 1,920,000 bytes and contains no values outside that
+palette, failing immediately if either check does not pass. The generated files land in
+`data/images/` and are ignored by Git. Connect the ESP32-S3, optionally
 set `upload_port` in `platformio.ini`, then build and upload the LittleFS partition:
 
 ```sh
