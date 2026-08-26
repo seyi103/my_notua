@@ -3,3 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Generated 1.92 MB LittleFS test frames are upload artifacts, not source.
+data/images/*.bin
