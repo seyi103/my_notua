@@ -1,0 +1,23 @@
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors
+.vscode/
+!.vscode/extensions.json
+*.code-workspace
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.*
+credentials.*
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
