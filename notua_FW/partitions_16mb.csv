@@ -1,8 +1,6 @@
-# 16MB flash: OTA 2 slots + spiffs partition (LittleFS image via board_build.filesystem=littlefs)
+# 16MB flash: single offline application + LittleFS (no OTA slots)
 # Name,   Type, SubType,  Offset,   Size,  Flags
 nvs,      data, nvs,      0x9000,   0x5000,
-otadata,  data, ota,       0xe000,   0x2000,
-ota_0,    app,  ota_0,     0x10000,  2M,
-ota_1,    app,  ota_1,     0x210000, 2M,
-spiffs,   data, spiffs,    0x410000, 0xB38000,
-coredump, data, coredump,  0xF48000, 0x10000,
+app,      app,  factory,   0x10000,  3M,
+littlefs, data, spiffs,    0x310000, 0xCE0000,
+coredump, data, coredump,  0xFF0000, 0x10000,
