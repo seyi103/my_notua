@@ -1,4 +1,4 @@
-# 16MB flash: single offline application + LittleFS (no OTA slots)
+# 16MB flash: single offline application + reserved future frame storage (no OTA slots)
 # Name,   Type, SubType,  Offset,   Size,  Flags
 nvs,      data, nvs,      0x9000,   0x5000,
 app,      app,  factory,   0x10000,  3M,
