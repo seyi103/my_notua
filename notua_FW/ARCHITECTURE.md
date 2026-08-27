@@ -54,10 +54,19 @@ A GPIO16 EXT1 wake does not mount LittleFS, open NVS, increment the image index,
 refresh it. It initializes a peripheral named `Notua`, advertises the stable primary Service UUID
 `7d2a4b70-8e67-4d8b-9f3a-36c89e210001`, and exposes the read-only status characteristic UUID
 `7d2a4b70-8e67-4d8b-9f3a-36c89e210002` with the UTF-8 value `ready`. Callbacks only record
-connection state, log the event, and restart advertising after disconnect; they never perform file,
-NVS, or EPD work. Initial advertising expires after 60 seconds without a connection. A disconnect
-starts a 30-second reconnection window. A connected client may remain connected without a firmware
-timeout.
+events into a FreeRTOS queue; they never log, restart advertising, or perform file, NVS, or EPD work.
+`pollBlePeripheral()` owns all state transitions, timestamps, logging, and reconnection advertising.
+Initial advertising expires after 60 seconds without a connection. A disconnect starts a 30-second
+reconnection window, and the return value from the advertising start is checked before success is
+logged. A connection is closed and cleaned up after 120 seconds without GATT activity. Reading the
+status characteristic refreshes that deadline, and future transfer characteristics can call the
+thread-safe `noteBleGattActivity()` hook to do the same.
+
+Every partial initialization failure stops advertising where applicable, deinitializes NimBLE, and
+deletes its event queue. A reconnection-advertising failure transitions to `initializationFailed`;
+release sleeps on the one-minute error-retry policy rather than treating it as a normal timeout.
+Development builds never sleep on these terminal paths and print the final `BleState` and uptime once
+per second so native USB diagnostics remain observable.
 
 NimBLE-Arduino 1.4.3 is pinned rather than the legacy Bluedroid Arduino BLE library because NimBLE
 has a substantially smaller RAM footprint on ESP32-S3. This preserves internal heap for control and
@@ -83,10 +92,16 @@ environment.
 4. In a phone BLE scanner, find `Notua`, connect, discover the documented service and characteristic,
    and read `ready`. Confirm the connect log. Disconnect, confirm the disconnect/re-advertising log,
    reconnect within 30 seconds, and confirm another connect log.
-5. Disconnect again and do not reconnect. Confirm advertising stops after 30 seconds and the board
+5. While connected, read `ready` before 120 seconds and confirm the connection remains active for
+   another 120-second window. Then perform no GATT activity, confirm the firmware terminates the
+   connection after 120 seconds, cleans up BLE, and enters deep sleep in release.
+6. Disconnect again and do not reconnect. Confirm advertising stops after 30 seconds and the board
    enters deep sleep. Repeat a button wake without ever connecting and confirm the corresponding
    timeout is 60 seconds before sleep.
-6. Hold the button HIGH during timeout. Confirm the board waits for release rather than immediately
+7. In a development build, induce initialization or advertising failure and an advertising timeout;
+   confirm USB remains enumerated and a `BLE terminal` heartbeat reports the final state and increasing
+   uptime once per second.
+8. Hold the button HIGH during timeout. Confirm the board waits for release rather than immediately
    waking. For the fault case, hold it longer than 10 seconds; confirm the explicit error, EXT1 is
    disabled for that sleep only, and the timer later wakes the board.
 

@@ -333,8 +333,17 @@ void loop() {
     if (gWakePath == WakePath::buttonBle) {
         feedWatchdog();
         pollBlePeripheral();
-        if (bleSessionExpired()) {
-            logInfo(TAG, "BLE session timeout: state=%s", bleStateName(bleState()));
+        const BleState currentBleState = bleState();
+        if (currentBleState == BleState::initializationFailed && !gTerminal) {
+            stopBlePeripheral();
+#if NOTUA_ALLOW_DEEP_SLEEP
+            enterDeepSleep(ERROR_RETRY_INTERVAL_US, "ble_runtime_error");
+#else
+            logError(TAG, "development policy: BLE runtime error; deep sleep disabled");
+            gTerminal = true;
+#endif
+        } else if (bleSessionExpired()) {
+            logInfo(TAG, "BLE inactivity timeout: state=%s", bleStateName(currentBleState));
             stopBlePeripheral();
 #if NOTUA_ALLOW_DEEP_SLEEP
             enterDeepSleep(SLEEP_INTERVAL_US, "ble_timeout");
@@ -342,6 +351,15 @@ void loop() {
             logInfo(TAG, "development policy: deep sleep disabled after BLE timeout");
             gTerminal = true;
 #endif
+        }
+        if (gTerminal) {
+            const uint32_t now = millis();
+            if ((now - gLastTerminalLogMs) >= 1000) {
+                gLastTerminalLogMs = now;
+                logInfo(TAG, "BLE terminal: state=%s uptime_ms=%lu",
+                    bleStateName(bleState()), static_cast<unsigned long>(now));
+                Serial.flush();
+            }
         }
         delay(25);
         return;

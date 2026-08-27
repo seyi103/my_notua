@@ -13,8 +13,9 @@ enum class BleState {
 
 bool beginBlePeripheral();
 void pollBlePeripheral();
+// Thread-safe hook for future GATT callbacks to refresh connected inactivity.
+bool noteBleGattActivity();
 BleState bleState();
 const char* bleStateName(BleState state);
 bool bleSessionExpired();
 void stopBlePeripheral();
-
