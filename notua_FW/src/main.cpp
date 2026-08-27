@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <Preferences.h>
+#include <esp_heap_caps.h>
 #include <esp_sleep.h>
 
 #include <algorithm>
@@ -17,7 +18,53 @@ constexpr size_t IMAGE_WIDTH = 1600;
 constexpr size_t IMAGE_HEIGHT = 1200;
 constexpr size_t IMAGE_BYTES = IMAGE_WIDTH * IMAGE_HEIGHT;
 constexpr uint64_t SLEEP_INTERVAL_US = 5ULL * 60ULL * 1000000ULL;
+constexpr uint64_t ERROR_RETRY_INTERVAL_US = 1ULL * 60ULL * 1000000ULL;
+constexpr uint32_t RELEASE_LOG_FLUSH_MS = 1000;
 constexpr size_t MAX_IMAGES = 3;
+
+#ifndef NOTUA_ALLOW_DEEP_SLEEP
+#define NOTUA_ALLOW_DEEP_SLEEP 0
+#endif
+
+static_assert(NOTUA_ALLOW_DEEP_SLEEP == 0 || NOTUA_ALLOW_DEEP_SLEEP == 1,
+    "NOTUA_ALLOW_DEEP_SLEEP must be 0 or 1");
+
+enum class RunResult {
+    success,
+    psram_unavailable,
+    filesystem_mount_failed,
+    no_valid_images,
+    preferences_open_failed,
+    image_load_failed,
+    display_failed,
+    index_persist_failed,
+};
+
+RunResult gLastRunResult = RunResult::success;
+bool gTerminal = false;
+uint32_t gLastTerminalLogMs = 0;
+
+const char* runResultName(RunResult result) {
+    switch (result) {
+    case RunResult::success:
+        return "success";
+    case RunResult::psram_unavailable:
+        return "psram_unavailable";
+    case RunResult::filesystem_mount_failed:
+        return "filesystem_mount_failed";
+    case RunResult::no_valid_images:
+        return "no_valid_images";
+    case RunResult::preferences_open_failed:
+        return "preferences_open_failed";
+    case RunResult::image_load_failed:
+        return "image_load_failed";
+    case RunResult::display_failed:
+        return "display_failed";
+    case RunResult::index_persist_failed:
+        return "index_persist_failed";
+    }
+    return "unknown";
+}
 
 bool isBinFile(const String& path) {
     String lower = path;
@@ -61,7 +108,8 @@ uint8_t* loadImage(const String& path) {
         return nullptr;
     }
 
-    uint8_t* image = static_cast<uint8_t*>(ps_malloc(IMAGE_BYTES));
+    uint8_t* image = static_cast<uint8_t*>(
+        heap_caps_malloc(IMAGE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!image) {
         logError(TAG, "PSRAM allocation failed for %u bytes", static_cast<unsigned>(IMAGE_BYTES));
         return nullptr;
@@ -98,18 +146,47 @@ void powerDownPanel() {
     boardPowerT2001Off();
 }
 
-void sleepUntilNextImage() {
+void finishRun(RunResult result) {
+    gLastRunResult = result;
     powerDownPanel();
     LittleFS.end();
-    logInfo(TAG, "deep sleep for %llu seconds", SLEEP_INTERVAL_US / 1000000ULL);
+
+#if NOTUA_ALLOW_DEEP_SLEEP
+    const uint64_t sleepIntervalUs = result == RunResult::success
+        ? SLEEP_INTERVAL_US
+        : ERROR_RETRY_INTERVAL_US;
+    if (result == RunResult::success) {
+        logInfo(TAG, "release complete: result=%s; deep sleep for %llu seconds",
+            runResultName(result), sleepIntervalUs / 1000000ULL);
+    } else {
+        logError(TAG, "release failed: result=%s; retry deep sleep in %llu seconds",
+            runResultName(result), sleepIntervalUs / 1000000ULL);
+    }
     Serial.flush();
-    esp_sleep_enable_timer_wakeup(SLEEP_INTERVAL_US);
+    const uint32_t flushStarted = millis();
+    while ((millis() - flushStarted) < RELEASE_LOG_FLUSH_MS) {
+        feedWatchdog();
+        delay(25);
+    }
+    Serial.flush();
+    esp_sleep_enable_timer_wakeup(sleepIntervalUs);
     esp_deep_sleep_start();
+#else
+    logInfo(TAG, "development run complete: result=%s; deep sleep disabled",
+        runResultName(result));
+#endif
+    Serial.flush();
+    gTerminal = true;
+    gLastTerminalLogMs = millis() - 1000;
 }
 } // namespace
 
 void setup() {
     initLog(115200, LOG_LEVEL_INFO);
+    waitForLogHost(1500);
+    logInfo(TAG, "boot: mode=%s wake_cause=%d",
+        NOTUA_ALLOW_DEEP_SLEEP ? "release" : "development",
+        static_cast<int>(esp_sleep_get_wakeup_cause()));
     boardPowerT2001Off();
 
     if (!beginWatchdog()) {
@@ -117,27 +194,33 @@ void setup() {
     }
     if (!psramFound()) {
         logError(TAG, "PSRAM unavailable");
-        sleepUntilNextImage();
+        finishRun(RunResult::psram_unavailable);
         return;
     }
+    logInfo(TAG, "PSRAM ready: total=%u free=%u largest=%u",
+        static_cast<unsigned>(heap_caps_get_total_size(MALLOC_CAP_SPIRAM)),
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
     if (!LittleFS.begin(false)) {
         logError(TAG, "LittleFS mount failed (automatic formatting disabled)");
-        sleepUntilNextImage();
+        finishRun(RunResult::filesystem_mount_failed);
         return;
     }
+    logInfo(TAG, "LittleFS mounted: total=%u used=%u", static_cast<unsigned>(LittleFS.totalBytes()),
+        static_cast<unsigned>(LittleFS.usedBytes()));
 
     const std::vector<String> images = findValidImages();
     if (images.empty()) {
         logError(TAG, "no valid %ux%u Y8 BIN images found", static_cast<unsigned>(IMAGE_WIDTH),
             static_cast<unsigned>(IMAGE_HEIGHT));
-        sleepUntilNextImage();
+        finishRun(RunResult::no_valid_images);
         return;
     }
 
     Preferences preferences;
     if (!preferences.begin("photo-cycle", false)) {
         logError(TAG, "cannot open persistent image index");
-        sleepUntilNextImage();
+        finishRun(RunResult::preferences_open_failed);
         return;
     }
     const size_t index = preferences.getUInt("next", 0) % images.size();
@@ -145,26 +228,46 @@ void setup() {
         static_cast<unsigned>(images.size()), images[index].c_str());
 
     uint8_t* image = loadImage(images[index]);
-    if (image) {
-        epd::t2001::render::MemorySource source(image, IMAGE_BYTES);
-        const auto result = epd::t2001::svc::display_8bpp_from_source(source, IMAGE_BYTES);
-        free(image);
-        if (epd::t2001::ok(result.low)) {
-            const size_t next = (index + 1) % images.size();
-            if (preferences.putUInt("next", next) == 0) {
-                logError(TAG, "display succeeded but next image index was not persisted");
-            } else {
-                logInfo(TAG, "display complete; next image index=%u", static_cast<unsigned>(next));
-            }
-        } else {
-            logError(TAG, "display failed: result=%d step=%d; index retained",
-                static_cast<int>(result.low), static_cast<int>(result.step));
-        }
+    if (!image) {
+        preferences.end();
+        finishRun(RunResult::image_load_failed);
+        return;
     }
+
+    epd::t2001::render::MemorySource source(image, IMAGE_BYTES);
+    const auto result = epd::t2001::svc::display_8bpp_from_source(source, IMAGE_BYTES);
+    free(image);
+    if (!epd::t2001::ok(result.low)) {
+        logError(TAG, "display failed: result=%d step=%d; index retained",
+            static_cast<int>(result.low), static_cast<int>(result.step));
+        preferences.end();
+        finishRun(RunResult::display_failed);
+        return;
+    }
+
+    const size_t next = (index + 1) % images.size();
+    if (preferences.putUInt("next", next) == 0) {
+        logError(TAG, "display succeeded but next image index was not persisted");
+        preferences.end();
+        finishRun(RunResult::index_persist_failed);
+        return;
+    }
+    logInfo(TAG, "display complete; next image index=%u", static_cast<unsigned>(next));
     preferences.end();
-    sleepUntilNextImage();
+    finishRun(RunResult::success);
 }
 
 void loop() {
-    // setup() always enters deep sleep.
+    // Development builds remain observable; this is only a fallback if deep sleep returns in release.
+    if (gTerminal) {
+        feedWatchdog();
+        const uint32_t now = millis();
+        if ((now - gLastTerminalLogMs) >= 1000) {
+            gLastTerminalLogMs = now;
+            logInfo(TAG, "terminal: result=%s uptime_ms=%lu", runResultName(gLastRunResult),
+                static_cast<unsigned long>(now));
+            Serial.flush();
+        }
+        delay(25);
+    }
 }

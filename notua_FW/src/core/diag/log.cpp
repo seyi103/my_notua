@@ -24,7 +24,14 @@ void initLog(uint32_t baudRate, LogLevel level) {
     gLogLevel = level;
 
     Serial.begin(baudRate);
-    delay(200); // USB CDC 안정화
+    delay(200);
+}
+
+void waitForLogHost(uint32_t timeoutMs) {
+    const uint32_t started = millis();
+    while (!Serial && (millis() - started) < timeoutMs) {
+        delay(10);
+    }
 }
 
 void logError(const char* tag, const char* fmt, ...) {

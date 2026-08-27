@@ -9,6 +9,7 @@ enum LogLevel : uint8_t {
 };
 
 void initLog(uint32_t baudRate, LogLevel level);
+void waitForLogHost(uint32_t timeoutMs);
 
 void logError(const char* tag, const char* fmt, ...);
 void logWarn(const char* tag, const char* fmt, ...);
