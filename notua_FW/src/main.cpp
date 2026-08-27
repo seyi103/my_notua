@@ -18,6 +18,8 @@ constexpr size_t IMAGE_WIDTH = 1600;
 constexpr size_t IMAGE_HEIGHT = 1200;
 constexpr size_t IMAGE_BYTES = IMAGE_WIDTH * IMAGE_HEIGHT;
 constexpr uint64_t SLEEP_INTERVAL_US = 5ULL * 60ULL * 1000000ULL;
+constexpr uint64_t ERROR_RETRY_INTERVAL_US = 1ULL * 60ULL * 1000000ULL;
+constexpr uint32_t RELEASE_LOG_FLUSH_MS = 1000;
 constexpr size_t MAX_IMAGES = 3;
 
 #ifndef NOTUA_ALLOW_DEEP_SLEEP
@@ -38,7 +40,31 @@ enum class RunResult {
     index_persist_failed,
 };
 
+RunResult gLastRunResult = RunResult::success;
 bool gTerminal = false;
+uint32_t gLastTerminalLogMs = 0;
+
+const char* runResultName(RunResult result) {
+    switch (result) {
+    case RunResult::success:
+        return "success";
+    case RunResult::psram_unavailable:
+        return "psram_unavailable";
+    case RunResult::filesystem_mount_failed:
+        return "filesystem_mount_failed";
+    case RunResult::no_valid_images:
+        return "no_valid_images";
+    case RunResult::preferences_open_failed:
+        return "preferences_open_failed";
+    case RunResult::image_load_failed:
+        return "image_load_failed";
+    case RunResult::display_failed:
+        return "display_failed";
+    case RunResult::index_persist_failed:
+        return "index_persist_failed";
+    }
+    return "unknown";
+}
 
 bool isBinFile(const String& path) {
     String lower = path;
@@ -121,25 +147,37 @@ void powerDownPanel() {
 }
 
 void finishRun(RunResult result) {
+    gLastRunResult = result;
     powerDownPanel();
     LittleFS.end();
 
 #if NOTUA_ALLOW_DEEP_SLEEP
+    const uint64_t sleepIntervalUs = result == RunResult::success
+        ? SLEEP_INTERVAL_US
+        : ERROR_RETRY_INTERVAL_US;
     if (result == RunResult::success) {
-        logInfo(TAG, "release display succeeded; deep sleep for %llu seconds",
-            SLEEP_INTERVAL_US / 1000000ULL);
-        Serial.flush();
-        esp_sleep_enable_timer_wakeup(SLEEP_INTERVAL_US);
-        esp_deep_sleep_start();
+        logInfo(TAG, "release complete: result=%s; deep sleep for %llu seconds",
+            runResultName(result), sleepIntervalUs / 1000000ULL);
+    } else {
+        logError(TAG, "release failed: result=%s; retry deep sleep in %llu seconds",
+            runResultName(result), sleepIntervalUs / 1000000ULL);
     }
-    logError(TAG, "release run failed (reason=%d); staying awake for diagnostics",
-        static_cast<int>(result));
+    Serial.flush();
+    const uint32_t flushStarted = millis();
+    while ((millis() - flushStarted) < RELEASE_LOG_FLUSH_MS) {
+        feedWatchdog();
+        delay(25);
+    }
+    Serial.flush();
+    esp_sleep_enable_timer_wakeup(sleepIntervalUs);
+    esp_deep_sleep_start();
 #else
-    logInfo(TAG, "development run complete (reason=%d); deep sleep disabled",
-        static_cast<int>(result));
+    logInfo(TAG, "development run complete: result=%s; deep sleep disabled",
+        runResultName(result));
 #endif
     Serial.flush();
     gTerminal = true;
+    gLastTerminalLogMs = millis() - 1000;
 }
 } // namespace
 
@@ -220,10 +258,16 @@ void setup() {
 }
 
 void loop() {
-    // A development build and every release failure intentionally remain here.
+    // Development builds remain observable; this is only a fallback if deep sleep returns in release.
     if (gTerminal) {
         feedWatchdog();
-        Serial.flush();
-        delay(250);
+        const uint32_t now = millis();
+        if ((now - gLastTerminalLogMs) >= 1000) {
+            gLastTerminalLogMs = now;
+            logInfo(TAG, "terminal: result=%s uptime_ms=%lu", runResultName(gLastRunResult),
+                static_cast<unsigned long>(now));
+            Serial.flush();
+        }
+        delay(25);
     }
 }

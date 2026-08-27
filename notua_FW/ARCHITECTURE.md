@@ -34,11 +34,12 @@ The boot application initializes native USB CDC, verifies PSRAM, mounts LittleFS
 validates and sorts up to three `/images/*.bin` Y8 frames,
 loads one 1600 x 1200 frame explicitly into byte-addressable PSRAM, and sends it through the existing
 T2001 service. Its NVS index advances only after a successful refresh. Every exit powers the panel
-down. The default `esp32-s3-dev` environment always remains awake, feeds the watchdog, and preserves
-USB diagnostics. Only an explicitly selected `esp32-s3-release` build may enter five-minute timer
-deep sleep, and only after both display refresh and index persistence succeed. Release failures also
-remain awake. Invalid-size files are logged and skipped; filesystem errors never trigger an automatic
-format.
+down. The default `esp32-s3-dev` environment always remains awake, feeds the watchdog, preserves USB
+diagnostics, and reports the final run result plus uptime once per second. An explicitly selected
+`esp32-s3-release` build enters five-minute timer deep sleep after both display refresh and index
+persistence succeed. Release failures flush their diagnostics and enter a separate one-minute retry
+deep sleep instead of remaining awake indefinitely. Invalid-size files are logged and skipped;
+filesystem errors never trigger an automatic format.
 
 ## Runtime audit and board-verification boundary
 
@@ -60,10 +61,13 @@ hardware:
    mailbox panel power for refresh; all rails turn off on every terminal path.
 4. HRDY, SPI traffic, temperature handling, VSX application, DARCR busy assertion/completion,
    refresh appearance, and retry/power recovery match the original T2001 hardware behavior.
-5. The watchdog does not reset during file loading, SPI transfer, refresh waits, or the awake
-   diagnostic loop. Verify that the NVS index changes only after a visibly completed refresh.
-6. An explicitly flashed release build sleeps only after success, wakes after five minutes, and
-   advances to the next sorted frame. A release failure must retain USB and logs instead of sleeping.
+5. The watchdog does not reset during file loading, SPI transfer, refresh waits, release log flushing,
+   or the awake diagnostic loop. The development terminal log must report the same final result and
+   increasing uptime every second. Verify that the NVS index changes only after a visibly completed
+   refresh.
+6. An explicitly flashed release build sleeps for five minutes after success and advances to the next
+   sorted frame. Injected release failures must flush the final error, sleep for one minute, then wake
+   and retry without advancing the index.
 
 `scripts/check_offline_dependencies.py` runs before every PlatformIO build. It rejects unresolved
 quoted includes and WiFi, MQTT, HTTP, OTA, or BLE framework headers, preventing either a broken
@@ -89,12 +93,14 @@ palette, failing immediately if either check does not pass. The generated files 
 set `upload_port` in `platformio.ini`, then build and upload the LittleFS partition:
 
 ```sh
-python3 -m platformio run --target buildfs
-python3 -m platformio run --target uploadfs
+python3 -m platformio run --environment esp32-s3-dev --target buildfs
+python3 -m platformio run --environment esp32-s3-dev --target uploadfs
 python3 -m platformio run --environment esp32-s3-dev --target upload
+python3 -m platformio run --environment esp32-s3-release
 ```
 
-Use `--environment esp32-s3-release` only for deployment testing. Upload the filesystem before
+The last command verifies the release build; add `--target upload` only when intentionally deploying
+it. Use `--environment esp32-s3-release` only for deployment testing. Upload the filesystem before
 firmware on an initially blank device. `uploadfs` replaces the
 filesystem contents. Serial logs at 115200 baud report rejected sizes, the selected path, display
 result, persisted next index, and sleep entry. Panel appearance, rail sequencing, refresh timing,
