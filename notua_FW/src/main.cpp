@@ -3,11 +3,14 @@
 #include <Preferences.h>
 #include <esp_heap_caps.h>
 #include <esp_sleep.h>
+#include <driver/rtc_io.h>
 
 #include <algorithm>
 #include <vector>
 
 #include "core/diag/log.h"
+#include "core/ble/blePeripheral.h"
+#include "core/board/pins.h"
 #include "core/epd/t2001/t2001_service.h"
 #include "core/power/boardPower.h"
 #include "core/power/watchdog.h"
@@ -21,6 +24,8 @@ constexpr uint64_t SLEEP_INTERVAL_US = 5ULL * 60ULL * 1000000ULL;
 constexpr uint64_t ERROR_RETRY_INTERVAL_US = 1ULL * 60ULL * 1000000ULL;
 constexpr uint32_t RELEASE_LOG_FLUSH_MS = 1000;
 constexpr size_t MAX_IMAGES = 3;
+constexpr uint64_t SW_WAKE_MASK = 1ULL << SW_PIN;
+constexpr uint32_t BUTTON_RELEASE_TIMEOUT_MS = 10UL * 1000UL;
 
 #ifndef NOTUA_ALLOW_DEEP_SLEEP
 #define NOTUA_ALLOW_DEEP_SLEEP 0
@@ -40,9 +45,55 @@ enum class RunResult {
     index_persist_failed,
 };
 
+enum class WakePath {
+    timerPhotoCycle,
+    buttonBle,
+    existingPolicy,
+};
+
 RunResult gLastRunResult = RunResult::success;
 bool gTerminal = false;
 uint32_t gLastTerminalLogMs = 0;
+WakePath gWakePath = WakePath::existingPolicy;
+
+const char* wakePathName(WakePath path) {
+    switch (path) {
+    case WakePath::timerPhotoCycle: return "timer_photo_cycle";
+    case WakePath::buttonBle: return "button_ble";
+    case WakePath::existingPolicy: return "existing_policy";
+    }
+    return "unknown";
+}
+
+void configureButtonWake() {
+    pinMode(SW_PIN, INPUT);
+    rtc_gpio_pullup_dis(static_cast<gpio_num_t>(SW_PIN));
+    rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(SW_PIN));
+    const esp_err_t result = esp_sleep_enable_ext1_wakeup(
+        SW_WAKE_MASK, ESP_EXT1_WAKEUP_ANY_HIGH);
+    logInfo(TAG, "EXT1 configured: gpio=%u mask=0x%llx any_high=true result=%d",
+        SW_PIN, SW_WAKE_MASK, static_cast<int>(result));
+}
+
+void enterDeepSleep(uint64_t timerUs, const char* reason) {
+    configureButtonWake();
+    const uint32_t started = millis();
+    while (digitalRead(SW_PIN) == HIGH && millis() - started < BUTTON_RELEASE_TIMEOUT_MS) {
+        feedWatchdog();
+        delay(25);
+    }
+    if (digitalRead(SW_PIN) == HIGH) {
+        logError(TAG, "GPIO16 remained HIGH for %u ms; disabling EXT1 for this sleep",
+            static_cast<unsigned>(BUTTON_RELEASE_TIMEOUT_MS));
+        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1);
+    }
+    if (timerUs != 0) {
+        esp_sleep_enable_timer_wakeup(timerUs);
+    }
+    logInfo(TAG, "deep sleep: reason=%s timer_s=%llu", reason, timerUs / 1000000ULL);
+    Serial.flush();
+    esp_deep_sleep_start();
+}
 
 const char* runResultName(RunResult result) {
     switch (result) {
@@ -169,8 +220,7 @@ void finishRun(RunResult result) {
         delay(25);
     }
     Serial.flush();
-    esp_sleep_enable_timer_wakeup(sleepIntervalUs);
-    esp_deep_sleep_start();
+    enterDeepSleep(sleepIntervalUs, runResultName(result));
 #else
     logInfo(TAG, "development run complete: result=%s; deep sleep disabled",
         runResultName(result));
@@ -184,13 +234,35 @@ void finishRun(RunResult result) {
 void setup() {
     initLog(115200, LOG_LEVEL_INFO);
     waitForLogHost(1500);
-    logInfo(TAG, "boot: mode=%s wake_cause=%d",
+    const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+    if (wakeCause == ESP_SLEEP_WAKEUP_TIMER) {
+        gWakePath = WakePath::timerPhotoCycle;
+    } else if (wakeCause == ESP_SLEEP_WAKEUP_EXT1
+        && (esp_sleep_get_ext1_wakeup_status() & SW_WAKE_MASK) != 0) {
+        gWakePath = WakePath::buttonBle;
+    }
+    const uint64_t ext1Mask = wakeCause == ESP_SLEEP_WAKEUP_EXT1
+        ? esp_sleep_get_ext1_wakeup_status() : 0;
+    logInfo(TAG, "boot: mode=%s wake_cause=%d wake_path=%s ext1_gpio_mask=0x%llx",
         NOTUA_ALLOW_DEEP_SLEEP ? "release" : "development",
-        static_cast<int>(esp_sleep_get_wakeup_cause()));
+        static_cast<int>(wakeCause), wakePathName(gWakePath), ext1Mask);
     boardPowerT2001Off();
 
     if (!beginWatchdog()) {
         logError(TAG, "watchdog initialization failed");
+    }
+    if (gWakePath == WakePath::buttonBle) {
+        const bool initialized = beginBlePeripheral();
+        logInfo(TAG, "button BLE path: initialization=%s state=%s",
+            initialized ? "success" : "failed", bleStateName(bleState()));
+        if (!initialized) {
+#if NOTUA_ALLOW_DEEP_SLEEP
+            enterDeepSleep(ERROR_RETRY_INTERVAL_US, "ble_initialization_failed");
+#else
+            gTerminal = true;
+#endif
+        }
+        return;
     }
     if (!psramFound()) {
         logError(TAG, "PSRAM unavailable");
@@ -258,6 +330,22 @@ void setup() {
 }
 
 void loop() {
+    if (gWakePath == WakePath::buttonBle) {
+        feedWatchdog();
+        pollBlePeripheral();
+        if (bleSessionExpired()) {
+            logInfo(TAG, "BLE session timeout: state=%s", bleStateName(bleState()));
+            stopBlePeripheral();
+#if NOTUA_ALLOW_DEEP_SLEEP
+            enterDeepSleep(SLEEP_INTERVAL_US, "ble_timeout");
+#else
+            logInfo(TAG, "development policy: deep sleep disabled after BLE timeout");
+            gTerminal = true;
+#endif
+        }
+        delay(25);
+        return;
+    }
     // Development builds remain observable; this is only a fallback if deep sleep returns in release.
     if (gTerminal) {
         feedWatchdog();

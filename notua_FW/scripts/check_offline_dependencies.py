@@ -9,8 +9,8 @@ PROJECT_DIR = Path(env.subst("$PROJECT_DIR"))
 SOURCE_ROOTS = (PROJECT_DIR / "src", PROJECT_DIR / "include")
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".h", ".hpp"}
 
-# Network/application transports are outside the current firmware boundary.
-# BLE headers are forbidden as well: BLE is planned, but not implemented yet.
+# IP network/application transports remain outside the firmware boundary. BLE is
+# intentionally allowed through the single, pinned NimBLE dependency.
 FORBIDDEN_INCLUDES = {
     "ArduinoOTA.h",
     "AsyncMqttClient.h",
@@ -22,10 +22,6 @@ FORBIDDEN_INCLUDES = {
     "WiFi.h",
     "WiFiClient.h",
     "espMqttClient.h",
-    "BLE2902.h",
-    "BLEDevice.h",
-    "BLEServer.h",
-    "BLEUtils.h",
 }
 INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*([<"])([^>"]+)[>"]', re.MULTILINE)
 
@@ -52,4 +48,4 @@ if errors:
         print(f"  - {error}")
     env.Exit(1)
 
-print("Core dependency check: local includes resolve; WiFi/MQTT/HTTP/OTA/BLE absent")
+print("Core dependency check: local includes resolve; WiFi/MQTT/HTTP/OTA absent")
