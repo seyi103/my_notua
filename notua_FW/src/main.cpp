@@ -14,6 +14,7 @@
 #include "core/epd/t2001/t2001_service.h"
 #include "core/power/boardPower.h"
 #include "core/power/watchdog.h"
+#include "core/storage/imageCatalog.h"
 
 namespace {
 constexpr const char* TAG = "PHOTO_CYCLE";
@@ -23,7 +24,6 @@ constexpr size_t IMAGE_BYTES = IMAGE_WIDTH * IMAGE_HEIGHT;
 constexpr uint64_t SLEEP_INTERVAL_US = 5ULL * 60ULL * 1000000ULL;
 constexpr uint64_t ERROR_RETRY_INTERVAL_US = 1ULL * 60ULL * 1000000ULL;
 constexpr uint32_t RELEASE_LOG_FLUSH_MS = 1000;
-constexpr size_t MAX_IMAGES = 3;
 constexpr uint64_t SW_WAKE_MASK = 1ULL << SW_PIN;
 constexpr uint32_t BUTTON_RELEASE_TIMEOUT_MS = 10UL * 1000UL;
 
@@ -117,38 +117,10 @@ const char* runResultName(RunResult result) {
     return "unknown";
 }
 
-bool isBinFile(const String& path) {
-    String lower = path;
-    lower.toLowerCase();
-    return lower.endsWith(".bin");
-}
-
 std::vector<String> findValidImages() {
-    std::vector<String> images;
-    File directory = LittleFS.open("/images");
-    if (!directory || !directory.isDirectory()) {
-        logError(TAG, "missing LittleFS directory /images");
-        return images;
-    }
-
-    for (File file = directory.openNextFile(); file; file = directory.openNextFile()) {
-        const String path = file.path();
-        if (file.isDirectory() || !isBinFile(path)) {
-            continue;
-        }
-        if (file.size() != IMAGE_BYTES) {
-            logError(TAG, "skip invalid image %s: size=%u expected=%u", path.c_str(),
-                static_cast<unsigned>(file.size()), static_cast<unsigned>(IMAGE_BYTES));
-            continue;
-        }
-        if (images.size() == MAX_IMAGES) {
-            logWarn(TAG, "skip extra image %s (maximum %u)", path.c_str(),
-                static_cast<unsigned>(MAX_IMAGES));
-            continue;
-        }
-        images.push_back(path);
-    }
-    std::sort(images.begin(), images.end());
+    bool tooMany = false;
+    auto images = notua::storage::collectImageCatalog(LittleFS, &tooMany);
+    if (tooMany) logWarn(TAG, "more than three valid images found; using first three sorted paths");
     return images;
 }
 

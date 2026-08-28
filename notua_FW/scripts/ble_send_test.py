@@ -25,6 +25,26 @@ NAMES = {1: "START_ACCEPTED", 2: "ACK", 3: "COMMITTED", 4: "APPLYING",
          0x86: "NOT_READY"}
 
 
+def decode_status(raw: bytes) -> tuple[int, int, int]:
+    if len(raw) != 12:
+        raise RuntimeError(f"status value is {len(raw)} bytes, expected 12")
+    version, code, _reserved, expected, detail = struct.unpack("<BBHII", raw)
+    if version != 1:
+        raise RuntimeError(f"status version was {version}, expected 1")
+    return code, expected, detail
+
+
+async def wait_for_status(notifications, client, timeout: float = 15.0):
+    """Wait for notify, then perform exactly one status read as loss recovery."""
+    try:
+        return await asyncio.wait_for(notifications.get(), timeout), False
+    except asyncio.TimeoutError:
+        status = decode_status(bytes(await client.read_gatt_char(STATUS)))
+        print(f"\nNotification timeout; recovered {NAMES.get(status[0], hex(status[0]))} "
+              f"at {status[1]:,} by read")
+        return status, True
+
+
 async def find_device(name: str | None):
     print(f"Scanning for {name or 'Notua'} / {SERVICE} ...")
     devices = await BleakScanner.discover(timeout=10.0, return_adv=True)
@@ -45,10 +65,10 @@ async def send(args: argparse.Namespace) -> None:
     notifications: asyncio.Queue[tuple[int, int, int]] = asyncio.Queue()
 
     def notified(_sender, value: bytearray) -> None:
-        if len(value) == 12:
-            version, code, _reserved, offset, detail = struct.unpack("<BBHII", value)
-            if version == 1:
-                notifications.put_nowait((code, offset, detail))
+        try:
+            notifications.put_nowait(decode_status(bytes(value)))
+        except RuntimeError as error:
+            print(f"\nIgnored malformed status notification: {error}")
 
     try:
         async with BleakClient(device, timeout=20.0) as client:
@@ -64,7 +84,7 @@ async def send(args: argparse.Namespace) -> None:
                 while not notifications.empty(): notifications.get_nowait()
                 await client.write_gatt_char(CONTROL, packet, response=True)
                 while True:
-                    status = await asyncio.wait_for(notifications.get(), 15)
+                    status, _recovered = await wait_for_status(notifications, client)
                     if status[0] in wanted or status[0] >= 0x80:
                         return status
 
@@ -84,8 +104,12 @@ async def send(args: argparse.Namespace) -> None:
                     await client.write_gatt_char(DATA, struct.pack("<I", packet_offset) + part, response=False)
                 target = offset
                 while True:
-                    code, expected, detail = await asyncio.wait_for(notifications.get(), 15)
+                    (code, expected, detail), recovered = await wait_for_status(notifications, client)
                     if code == 2 and expected >= target: break
+                    if recovered and code == 2:
+                        retries += 1; offset = expected
+                        print(f"Status read recovery: retry from {expected:,} (attempt {retries})")
+                        break
                     if code in (0x82, 0x83):
                         retries += 1; offset = expected
                         print(f"\n{NAMES[code]}: retry from {expected:,} (attempt {retries})")

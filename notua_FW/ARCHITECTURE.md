@@ -104,13 +104,17 @@ START validates version, reserved byte, slot policy, exact size, and opens
 `/images/notua_upload.tmp`. DATA callbacks only bounds-check and copy at most 512 bytes into an
 eight-entry FreeRTOS queue. `pollBlePeripheral()` performs LittleFS writes and streaming CRC32/IEEE
 (the same result as Python `zlib.crc32`). Duplicate offsets are ACKed without another write; future
-offsets receive BAD_OFFSET. A full queue returns QUEUE_FULL. The reference sender transmits at most
-eight packets and waits until ACK reaches the window end, retrying from the supplied expected offset.
+offsets receive BAD_OFFSET. A full queue returns QUEUE_FULL. ACK notifications are coalesced: poll
+sends one after eight persisted packets or once the transfer queue drains, never one per packet.
+Errors remain immediate. The reference sender transmits at most eight packets and waits until ACK
+reaches the window end, retrying from the supplied expected offset.
 FINISH is processed in queue order and succeeds only after all earlier DATA has been written, the
 size is 1,920,000, and CRC matches.
 
-On commit, an existing target is renamed to `/images/notua_replace.bak`, the temporary file is
-renamed into place, and failure rolls the backup back. A marker records the backup target so boot-time
+On commit, firmware (1) durably writes the marker, (2) renames final to backup, (3) renames temp to
+final, (4) writes NVS pending, (5) removes backup, then (6) removes marker before sending COMMITTED.
+Marker-write, final-to-backup, temp-to-final, and backup-restore failures have distinct internal
+results mapped to STORAGE_ERROR detail values. A marker records the backup target so boot-time
 recovery restores it if replacement was interrupted; stale temporary files are removed. Unknown
 image files are never deleted. Sorted valid images define slots 0..2: an existing index replaces that
 path, the next contiguous index creates `/images/notua_slot_N.bin`, and gaps or more than three valid
@@ -137,7 +141,10 @@ The sender scans by `Notua` or the service UUID, computes size and `zlib.crc32` 
 uses the discovered Data characteristic's `max_write_without_response_size` minus the four-byte
 offset (also capped to the firmware's 512-byte GATT value limit), subscribes before START, and prints
 progress, rate, retry count, and final CRC. A disconnect is fatal and explicitly instructs the user
-to reconnect and restart from START.
+to reconnect and restart from START. Because NimBLE 1.4.3 has a void `notify()` API, firmware returns
+whether it could synchronously issue notify while connected and logs failures; the characteristic's
+read value is updated first in every case. On a notification timeout the sender reads Transfer Status
+once, recovers its persisted offset, and retransmits from that offset.
 
 ## Transfer board verification (not CI)
 

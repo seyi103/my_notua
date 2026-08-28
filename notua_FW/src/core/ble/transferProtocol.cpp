@@ -36,6 +36,24 @@ void encodeStatus(uint8_t output[STATUS_BYTES], Status status, uint32_t nextOffs
     writeLe32(output + 8, detail);
 }
 
+OffsetDisposition classifyOffset(uint32_t received, uint32_t expected) {
+    if (received < expected) return OffsetDisposition::duplicate;
+    if (received > expected) return OffsetDisposition::future;
+    return OffsetDisposition::expected;
+}
+
+bool AckCoalescer::persistedPacket() {
+    if (++pending_ < 8) return false;
+    pending_ = 0;
+    return true;
+}
+
+bool AckCoalescer::flush(bool queueEmpty) {
+    if (!queueEmpty || pending_ == 0) return false;
+    pending_ = 0;
+    return true;
+}
+
 void Crc32::reset() { crc_ = 0xffffffffU; }
 void Crc32::update(const uint8_t* data, size_t length) {
     while (length--) {

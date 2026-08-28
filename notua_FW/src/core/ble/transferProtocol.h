@@ -18,6 +18,7 @@ enum class Status : uint8_t {
 };
 
 struct StartCommand { uint8_t slot; uint32_t size; uint32_t crc32; };
+enum class OffsetDisposition : uint8_t { expected, duplicate, future };
 
 uint32_t readLe32(const uint8_t* value);
 void writeLe32(uint8_t* destination, uint32_t value);
@@ -25,6 +26,16 @@ bool parseStart(const uint8_t* data, size_t length, StartCommand& command);
 bool isSimpleCommand(const uint8_t* data, size_t length, Opcode opcode);
 void encodeStatus(uint8_t output[STATUS_BYTES], Status status, uint32_t nextOffset,
     uint32_t detail);
+OffsetDisposition classifyOffset(uint32_t received, uint32_t expected);
+
+class AckCoalescer {
+public:
+    bool persistedPacket();
+    bool flush(bool queueEmpty);
+    void reset() { pending_ = 0; }
+private:
+    uint8_t pending_ = 0;
+};
 
 class Crc32 {
 public:

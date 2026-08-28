@@ -45,12 +45,20 @@ QueueHandle_t gTransferQueue = nullptr;
 struct FeedbackEvent { notua::transfer::Status status; uint32_t detail; };
 QueueHandle_t gFeedbackQueue = nullptr;
 
-void publishStatus(notua::transfer::Status status, uint32_t offset, uint32_t detail = 0) {
-    if (!gTransferStatus) return;
+bool publishStatus(notua::transfer::Status status, uint32_t offset, uint32_t detail = 0) {
+    if (!gTransferStatus) { logError(TAG, "status update failed: characteristic unavailable"); return false; }
     uint8_t packet[notua::transfer::STATUS_BYTES];
     notua::transfer::encodeStatus(packet, status, offset, detail);
     gTransferStatus->setValue(packet, sizeof(packet));
-    if (gState == BleState::connected) gTransferStatus->notify();
+    if (gState != BleState::connected) {
+        logWarn(TAG, "status value updated without notification: code=%u not connected",
+            static_cast<unsigned>(status));
+        return false;
+    }
+    // NimBLE-Arduino 1.4.3 exposes notify() as void. Reaching this call while connected is the
+    // strongest synchronous success result available; timeout recovery reads the retained value.
+    gTransferStatus->notify();
+    return true;
 }
 
 bool enqueueTransfer(TransferEventType type, const std::string& value) {
@@ -160,6 +168,10 @@ bool beginBlePeripheral() {
 
     NimBLEDevice::init(DEVICE_NAME);
     gDeviceInitialized = true;
+    constexpr uint16_t PREFERRED_MTU = 517;
+    const int mtuResult = NimBLEDevice::setMTU(PREFERRED_MTU);
+    logInfo(TAG, "preferred MTU: requested=%u result=%d success=%s",
+        static_cast<unsigned>(PREFERRED_MTU), mtuResult, mtuResult == 0 ? "true" : "false");
     NimBLEDevice::setPower(ESP_PWR_LVL_P3);
     gServer = NimBLEDevice::createServer();
     if (!gServer) {
@@ -245,49 +257,78 @@ void pollBlePeripheral() {
         }
     }
     TransferEvent transfer{};
+    notua::transfer::AckCoalescer acknowledgements;
+    bool transferError = false;
     while (gTransferQueue && xQueueReceive(gTransferQueue, &transfer, 0) == pdTRUE) {
         using namespace notua::transfer;
         if (transfer.type == TransferEventType::data) {
-            if (transfer.length < 5) { publishStatus(Status::badCommand, gStorage.offset(), transfer.length); continue; }
+            if (transfer.length < 5) {
+                publishStatus(Status::badCommand, gStorage.offset(), transfer.length);
+                transferError = true; continue;
+            }
             const uint32_t offset = readLe32(transfer.bytes);
-            if (!gStorage.active()) publishStatus(Status::notReady, gStorage.offset());
-            else if (offset < gStorage.offset()) publishStatus(Status::ack, gStorage.offset());
-            else if (offset > gStorage.offset()) publishStatus(Status::badOffset, gStorage.offset(), offset);
-            else if (!gStorage.append(transfer.bytes + 4, transfer.length - 4))
-                publishStatus(Status::storageError, gStorage.offset());
-            else publishStatus(Status::ack, gStorage.offset());
+            if (!gStorage.active()) { publishStatus(Status::notReady, gStorage.offset()); transferError = true; }
+            else if (classifyOffset(offset, gStorage.offset()) == OffsetDisposition::duplicate) {
+                if (acknowledgements.persistedPacket()) publishStatus(Status::ack, gStorage.offset());
+            } else if (classifyOffset(offset, gStorage.offset()) == OffsetDisposition::future) {
+                publishStatus(Status::badOffset, gStorage.offset(), offset); transferError = true;
+            } else if (!gStorage.append(transfer.bytes + 4, transfer.length - 4)) {
+                publishStatus(Status::storageError, gStorage.offset()); transferError = true;
+            } else if (acknowledgements.persistedPacket()) publishStatus(Status::ack, gStorage.offset());
             continue;
+        }
+        if (!transferError && acknowledgements.flush(true)) {
+            publishStatus(Status::ack, gStorage.offset());
         }
         StartCommand start{};
         if (parseStart(transfer.bytes, transfer.length, start)) {
             if (start.size != IMAGE_BYTES) publishStatus(Status::badSize, 0, start.size);
             else if (start.slot > 2) publishStatus(Status::badCommand, 0, start.slot);
-            else if (!gStorage.start(start.slot, start.size, start.crc32))
-                publishStatus(Status::notReady, 0, start.slot);
-            else { gCommitted = false; publishStatus(Status::startAccepted, 0); }
+            else {
+                const auto result = gStorage.start(start.slot, start.size, start.crc32);
+                using notua::storage::StartResult;
+                if (result == StartResult::ok) { gCommitted = false; publishStatus(Status::startAccepted, 0); }
+                else if (result == StartResult::badSize) publishStatus(Status::badSize, 0, start.size);
+                else if (result == StartResult::badSlot) publishStatus(Status::badCommand, 0, start.slot);
+                else if (result == StartResult::noSpace || result == StartResult::openFailed
+                    || result == StartResult::cleanupFailed) publishStatus(Status::storageError, 0, static_cast<uint32_t>(result));
+                else publishStatus(Status::notReady, 0, static_cast<uint32_t>(result));
+            }
         } else if (isSimpleCommand(transfer.bytes, transfer.length, Opcode::abort)) {
             gStorage.abort(); gCommitted = false; publishStatus(Status::ack, 0);
         } else if (isSimpleCommand(transfer.bytes, transfer.length, Opcode::finish)) {
-            uint32_t detail = 0; const Status result = gStorage.finish(detail);
-            if (result == Status::committed) {
+            uint32_t detail = 0; const auto result = gStorage.finish(detail);
+            using notua::storage::CommitResult;
+            if (result == CommitResult::committed) {
                 Preferences preferences;
                 const bool opened = preferences.begin("photo-cycle", false);
                 const bool stored = opened
                     && preferences.putString("pending", gStorage.committedPath()) != 0;
                 if (!stored) {
                     if (opened) { preferences.remove("pending"); preferences.end(); }
-                    gStorage.rollbackCommit();
+                    const auto rollback = gStorage.rollbackCommit();
+                    if (rollback != notua::storage::CleanupResult::ok)
+                        logError(TAG, "commit rollback failed: result=%u", static_cast<unsigned>(rollback));
                     publishStatus(Status::storageError, gStorage.offset());
                 } else {
-                    preferences.end(); gStorage.finalizeCommit(); gCommitted = true;
-                    publishStatus(result, gStorage.offset());
+                    preferences.end();
+                    const auto cleanup = gStorage.finalizeCommit();
+                    if (cleanup != notua::storage::CleanupResult::ok)
+                        logWarn(TAG, "commit cleanup incomplete: result=%u; final and pending remain valid",
+                            static_cast<unsigned>(cleanup));
+                    gCommitted = true; publishStatus(Status::committed, gStorage.offset());
                 }
-            } else publishStatus(result, gStorage.offset(), detail);
+            } else if (result == CommitResult::badSize) publishStatus(Status::badSize, gStorage.offset(), detail);
+            else if (result == CommitResult::crcMismatch) publishStatus(Status::crcMismatch, gStorage.offset(), detail);
+            else if (result == CommitResult::notReady) publishStatus(Status::notReady, gStorage.offset());
+            else publishStatus(Status::storageError, gStorage.offset(), static_cast<uint32_t>(result));
         } else if (isSimpleCommand(transfer.bytes, transfer.length, Opcode::apply)) {
             if (!gCommitted) publishStatus(Status::notReady, gStorage.offset());
             else { publishStatus(Status::applying, gStorage.offset()); gApplyRequested = true; }
         } else publishStatus(Status::badCommand, gStorage.offset(), transfer.length);
     }
+    if (!transferError && acknowledgements.flush(true))
+        publishStatus(notua::transfer::Status::ack, gStorage.offset());
     FeedbackEvent feedback{};
     while (gFeedbackQueue && xQueueReceive(gFeedbackQueue, &feedback, 0) == pdTRUE)
         publishStatus(feedback.status, gStorage.offset(), feedback.detail);
