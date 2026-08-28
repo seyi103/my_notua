@@ -174,6 +174,15 @@ void finishRun(RunResult result) {
     LittleFS.end();
 
 #if NOTUA_ALLOW_DEEP_SLEEP
+    if (result == RunResult::sync_in_progress) {
+        logInfo(TAG, "release sync wait: preserving EPD and entering GPIO16 EXT1-only deep sleep");
+        Serial.flush();
+        const uint32_t flushStarted = millis();
+        while ((millis() - flushStarted) < RELEASE_LOG_FLUSH_MS) {
+            feedWatchdog(); delay(25);
+        }
+        enterDeepSleep(0, "sync_wait_button");
+    }
     const uint64_t sleepIntervalUs = result == RunResult::success
         ? gConfiguredSleepUs
         : ERROR_RETRY_INTERVAL_US;
@@ -271,7 +280,7 @@ void setup() {
         playlistStore.end(); finishRun(RunResult::sync_in_progress); return;
     }
     notua::storage::Playlist playlist{};
-    if (!playlistStore.loadActive(catalog, playlist)) {
+    if (!playlistStore.loadActiveValidated(catalog, playlist)) {
         logError(TAG, "no valid %ux%u Y8 BIN images found", static_cast<unsigned>(IMAGE_WIDTH),
             static_cast<unsigned>(IMAGE_HEIGHT));
         playlistStore.end();

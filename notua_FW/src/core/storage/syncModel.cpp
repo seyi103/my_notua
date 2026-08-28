@@ -4,7 +4,9 @@
 namespace notua::storage {
 
 bool validatePlaylist(const Playlist& playlist) {
-    if (playlist.count < 1 || playlist.count > MAX_IMAGES || playlist.intervalSeconds == 0) return false;
+    if (playlist.count < 1 || playlist.count > MAX_IMAGES
+        || playlist.intervalSeconds < MIN_INTERVAL_SECONDS
+        || playlist.intervalSeconds > MAX_INTERVAL_SECONDS) return false;
     uint8_t seen = 0;
     for (uint8_t i = 0; i < playlist.count; ++i) {
         if (playlist.slots[i] >= MAX_IMAGES) return false;
@@ -63,6 +65,27 @@ RecoveryAction recoveryAction(SyncStage stage, bool targetExists, bool backupExi
     if (stage == SyncStage::committed) return targetExists
         ? RecoveryAction::keepFinal : RecoveryAction::restoreBackup;
     return RecoveryAction::unrecoverable;
+}
+
+bool applyAllowed(bool syncInProgress, bool playlistCommitted, bool pendingDurable) {
+    return !syncInProgress && playlistCommitted && pendingDurable;
+}
+
+RecoveryResult executeRecovery(RecoveryIo& io, SyncStage stage) {
+    const RecoveryAction action = recoveryAction(stage, io.targetExists(), true);
+    if (action == RecoveryAction::keepFinal) {
+        if (!io.removeBackup() || !io.removeMarker()) return RecoveryResult::cleanupFailed;
+        return RecoveryResult::ok;
+    }
+    if (action != RecoveryAction::restoreBackup) return RecoveryResult::restoreFailed;
+    const bool hadTarget = io.targetExists();
+    if (hadTarget && !io.moveTargetAside()) return RecoveryResult::moveFailed;
+    if (!io.restoreBackup()) {
+        if (hadTarget) io.restoreAside();
+        return RecoveryResult::restoreFailed;
+    }
+    if (!io.removeAside() || !io.removeMarker()) return RecoveryResult::cleanupFailed;
+    return RecoveryResult::ok;
 }
 
 } // namespace notua::storage

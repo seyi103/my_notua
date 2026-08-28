@@ -18,6 +18,17 @@ class ProtocolExecutableTest(unittest.TestCase):
             #include "core/ble/transferProtocol.h"
             #include "core/storage/syncModel.h"
             using namespace notua::transfer;
+            struct FakeRecovery : notua::storage::RecoveryIo {
+                bool target=true, backup=true, aside=false, marker=true;
+                bool failRestore=false, failCleanup=false;
+                bool targetExists() const override{return target;}
+                bool moveTargetAside() override{if(!target)return false;target=false;aside=true;return true;}
+                bool restoreBackup() override{if(failRestore)return false;backup=false;target=true;return true;}
+                bool restoreAside() override{if(!aside)return false;aside=false;target=true;return true;}
+                bool removeBackup() override{if(failCleanup)return false;backup=false;return true;}
+                bool removeAside() override{if(failCleanup)return false;aside=false;return true;}
+                bool removeMarker() override{if(failCleanup)return false;marker=false;return true;}
+            };
             int main() {
                 uint8_t start[] = {1,1,2,0,0x00,0x4c,0x1d,0,0x78,0x56,0x34,0x12};
                 StartCommand command{};
@@ -54,6 +65,24 @@ class ProtocolExecutableTest(unittest.TestCase):
                 assert(recoveryAction(SyncStage::prepared,false,true)==RecoveryAction::restoreBackup);
                 assert(recoveryAction(SyncStage::committed,true,true)==RecoveryAction::keepFinal);
                 assert(recoveryAction(SyncStage::committed,false,true)==RecoveryAction::restoreBackup);
+                Playlist tooFast{}; tooFast.count=1; tooFast.slots[0]=0; tooFast.intervalSeconds=59;
+                assert(!validatePlaylist(tooFast));
+                tooFast.intervalSeconds=MIN_INTERVAL_SECONDS; assert(validatePlaylist(tooFast));
+                tooFast.intervalSeconds=MAX_INTERVAL_SECONDS; assert(validatePlaylist(tooFast));
+                tooFast.intervalSeconds=MAX_INTERVAL_SECONDS+1; assert(!validatePlaylist(tooFast));
+                assert(!applyAllowed(true,true,true));
+                assert(!applyAllowed(false,false,true));
+                assert(applyAllowed(false,true,true));
+                FakeRecovery prepared; assert(executeRecovery(prepared,SyncStage::prepared)==RecoveryResult::ok);
+                assert(prepared.target && !prepared.backup && !prepared.marker);
+                FakeRecovery installed; assert(executeRecovery(installed,SyncStage::committed)==RecoveryResult::ok);
+                assert(installed.target && !installed.backup && !installed.marker);
+                FakeRecovery failed; failed.failRestore=true;
+                assert(executeRecovery(failed,SyncStage::prepared)==RecoveryResult::restoreFailed);
+                assert(failed.target && failed.backup && failed.marker);
+                FakeRecovery cleanup; cleanup.failCleanup=true;
+                assert(executeRecovery(cleanup,SyncStage::committed)==RecoveryResult::cleanupFailed);
+                assert(cleanup.target && cleanup.backup && cleanup.marker);
             }
         """)
         with tempfile.TemporaryDirectory() as directory:
@@ -67,51 +96,6 @@ class ProtocolExecutableTest(unittest.TestCase):
 
     def test_python_crc_reference(self):
         self.assertEqual(zlib.crc32(b"123456789") & 0xFFFFFFFF, 0xCBF43926)
-
-
-class FakeTransactionalStorage:
-    """Host fake exercising the documented no-loss transition decisions."""
-    def __init__(self):
-        self.final, self.temp, self.backup, self.marker = True, True, False, False
-
-    def commit(self, fail):
-        if fail == "marker": return "marker_write_failed"
-        self.marker = True
-        if fail == "final_to_backup": return "final_to_backup_failed"
-        self.final, self.backup = False, True
-        if fail == "temp_to_final":
-            if fail == "temp_to_final" and self.backup:
-                self.final, self.backup = True, False
-            return "temp_to_final_failed"
-        self.temp, self.final = False, True
-        return "committed"
-
-    def rollback(self, restore_fails=False):
-        new_final = self.final
-        if restore_fails:
-            # The new final is restored and the old backup+marker are retained.
-            self.final, self.backup, self.marker = new_final, True, True
-            return "backup_restore_failed"
-        self.final, self.backup, self.marker = True, False, False
-        return "ok"
-
-
-class TransactionStateTest(unittest.TestCase):
-    def test_distinct_commit_failures_preserve_a_valid_image(self):
-        for fault, result in (("marker", "marker_write_failed"),
-                              ("final_to_backup", "final_to_backup_failed"),
-                              ("temp_to_final", "temp_to_final_failed")):
-            storage = FakeTransactionalStorage()
-            self.assertEqual(storage.commit(fault), result)
-            self.assertTrue(storage.final or storage.backup)
-
-    def test_failed_backup_restore_keeps_new_final_and_recovery_artifacts(self):
-        storage = FakeTransactionalStorage()
-        self.assertEqual(storage.commit(None), "committed")
-        self.assertEqual(storage.rollback(restore_fails=True), "backup_restore_failed")
-        self.assertTrue(storage.final)
-        self.assertTrue(storage.backup)
-        self.assertTrue(storage.marker)
 
 
 if __name__ == "__main__":

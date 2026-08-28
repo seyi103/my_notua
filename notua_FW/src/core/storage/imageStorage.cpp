@@ -13,6 +13,20 @@ constexpr const char* ROLLBACK_PATH = "/images/notua_rollback.tmp";
 bool removeChecked(const char* path) {
     return !LittleFS.exists(path) || LittleFS.remove(path);
 }
+
+class LittleFsRecoveryIo final : public RecoveryIo {
+public:
+    explicit LittleFsRecoveryIo(const String& target) : target_(target) {}
+    bool targetExists() const override { return LittleFS.exists(target_); }
+    bool moveTargetAside() override { return LittleFS.rename(target_, ROLLBACK_PATH); }
+    bool restoreBackup() override { return LittleFS.rename(BACKUP_PATH, target_); }
+    bool restoreAside() override { return LittleFS.rename(ROLLBACK_PATH, target_); }
+    bool removeBackup() override { return removeChecked(BACKUP_PATH); }
+    bool removeAside() override { return removeChecked(ROLLBACK_PATH); }
+    bool removeMarker() override { return removeChecked(MARKER_PATH); }
+private:
+    String target_;
+};
 }
 
 bool ImageStorage::begin() {
@@ -35,24 +49,14 @@ CleanupResult ImageStorage::recover() {
         || value[1] < '0' || value[1] >= '0' + MAX_IMAGES) return CleanupResult::backupRestoreFailed;
     const String target = String("/images/slot_") + String(value[1] - '0') + ".bin";
     const SyncStage stage = value[0] == 'C' ? SyncStage::committed : SyncStage::prepared;
-    const RecoveryAction action = recoveryAction(stage, LittleFS.exists(target), true);
-    if (action == RecoveryAction::keepFinal) {
-        if (!removeChecked(BACKUP_PATH)) return CleanupResult::removeFailed;
-    } else if (action == RecoveryAction::restoreBackup) {
-        // PREPARED means old image wins. Move the new final aside so failed restoration never
-        // destroys the only usable copy.
-        if (LittleFS.exists(target)) {
-            if (!LittleFS.rename(target, ROLLBACK_PATH)) return CleanupResult::renameFailed;
-        }
-        if (!LittleFS.rename(BACKUP_PATH, target)) {
-            if (LittleFS.exists(ROLLBACK_PATH) && !LittleFS.rename(ROLLBACK_PATH, target))
-                return CleanupResult::backupRestoreFailed;
-            return CleanupResult::backupRestoreFailed;
-        }
-        if (!removeChecked(ROLLBACK_PATH)) return CleanupResult::removeFailed;
-    } else return CleanupResult::backupRestoreFailed;
-    if (!removeChecked(MARKER_PATH)) return CleanupResult::removeFailed;
-    return CleanupResult::ok;
+    LittleFsRecoveryIo io(target);
+    switch (executeRecovery(io, stage)) {
+    case RecoveryResult::ok: return CleanupResult::ok;
+    case RecoveryResult::moveFailed: return CleanupResult::renameFailed;
+    case RecoveryResult::cleanupFailed: return CleanupResult::removeFailed;
+    case RecoveryResult::restoreFailed: return CleanupResult::backupRestoreFailed;
+    }
+    return CleanupResult::backupRestoreFailed;
 }
 
 StartResult ImageStorage::start(uint8_t slot, uint32_t size, uint32_t crc32) {

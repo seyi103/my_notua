@@ -12,6 +12,7 @@ DATA="7d2a4b70-8e67-4d8b-9f3a-36c89e210004"
 STATUS="7d2a4b70-8e67-4d8b-9f3a-36c89e210005"
 CATALOG="7d2a4b70-8e67-4d8b-9f3a-36c89e210006"
 IMAGE_BYTES=1_920_000; MAX_IMAGES=5; WINDOW=8; PLAYLIST_BYTES=35
+MIN_INTERVAL_SECONDS=60; MAX_INTERVAL_SECONDS=24*60*60; DEFAULT_INTERVAL_SECONDS=300
 NAMES={1:"START_ACCEPTED",2:"ACK",3:"COMMITTED",4:"APPLYING",5:"PLAYLIST_COMMITTED",6:"SYNC_ACCEPTED",
 0x80:"BAD_COMMAND",0x81:"BAD_SIZE",0x82:"BAD_OFFSET",0x83:"QUEUE_FULL",0x84:"CRC_MISMATCH",
 0x85:"STORAGE_ERROR",0x86:"NOT_READY"}
@@ -27,6 +28,8 @@ def decode_status(raw: bytes):
 
 def encode_playlist(revision:int, images:list[Image], interval:int)->bytes:
     if not 1<=len(images)<=MAX_IMAGES: raise ValueError("playlist requires 1-5 images")
+    if not MIN_INTERVAL_SECONDS<=interval<=MAX_INTERVAL_SECONDS:
+        raise ValueError(f"interval requires {MIN_INTERVAL_SECONDS}..{MAX_INTERVAL_SECONDS} seconds")
     slots=[image.slot for image in images]+[0]*(MAX_IMAGES-len(images))
     crcs=[image.crc for image in images]+[0]*(MAX_IMAGES-len(images))
     return struct.pack("<BBII5B5I",1,len(images),revision,interval,*slots,*crcs)
@@ -35,6 +38,11 @@ def decode_playlist(raw:bytes):
     version,count,revision,interval,*values=struct.unpack("<BBII5B5I",raw)
     return {"version":version,"count":count,"revision":revision,"interval":interval,
             "slots":values[:5],"crcs":values[5:]}
+
+def playlist_matches(requested:bytes, stored:dict)->bool:
+    """Compare every encoded target field, including unused fixed-width entries."""
+    return requested == struct.pack("<BBII5B5I", stored["version"], stored["count"],
+        stored["revision"], stored["interval"], *stored["slots"], *stored["crcs"])
 
 def decode_catalog(raw:bytes):
     if len(raw)!=124 or raw[0]!=1 or raw[1]!=MAX_IMAGES: raise RuntimeError("unsupported catalog packet")
@@ -101,7 +109,10 @@ async def synchronize(args):
                 for image in images:
                     if image.crc in by_crc:image.slot=by_crc[image.crc]
             target=encode_playlist(revision,images,args.interval)
-            continuing=catalog["stage"]==1 and catalog["target"]["revision"]==revision
+            continuing=catalog["stage"]==1 and playlist_matches(target,catalog["target"])
+            if catalog["stage"]==1 and not continuing:
+                raise RuntimeError("device has an incomplete synchronization with a different complete target; "
+                                   "rerun with the original files/order/revision/interval and finish it first")
             if not continuing:
                 status=await command(b"\x01\x10"+target,{6})
                 if status[0]!=6: raise RuntimeError(f"SYNC_BEGIN failed: {NAMES.get(status[0])}")
@@ -140,8 +151,11 @@ async def synchronize(args):
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--file",type=Path,action="append",required=True,help="ordered Y8 file; repeat 1-5 times")
-    parser.add_argument("--revision",type=int); parser.add_argument("--interval",type=int,default=300)
+    parser.add_argument("--revision",type=int)
+    parser.add_argument("--interval",type=int,default=DEFAULT_INTERVAL_SECONDS)
     parser.add_argument("--name"); args=parser.parse_args()
     if not 1<=len(args.file)<=MAX_IMAGES: parser.error("--file must be repeated 1-5 times")
+    if not MIN_INTERVAL_SECONDS<=args.interval<=MAX_INTERVAL_SECONDS:
+        parser.error(f"--interval must be {MIN_INTERVAL_SECONDS}..{MAX_INTERVAL_SECONDS} seconds")
     asyncio.run(synchronize(args))
 if __name__=="__main__":main()

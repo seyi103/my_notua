@@ -129,7 +129,8 @@ only into empty fixed slots. Unmapped or unknown files are never deleted.
 The 124-byte Catalog value is `version, slot_count=5, sync_stage, completed_bitmap`, followed by five
 10-byte entries (`slot, flags(exists|valid), size u32, crc32 u32`), active PLAYLIST, and target
 PLAYLIST. PLAYLIST is 35 bytes: `version, count, revision u32, interval_seconds u32, slots[5],
-crc32[5]`. Count is 1..5, slots are unique, and the default interval remains 300 seconds. Display
+crc32[5]`. Count is 1..5, slots are unique, and interval is bounded to 60..86,400 seconds with a
+300-second default. The firmware decoder and Python CLI enforce the same bounds. Display
 selection uses active playlist order, never filename order.
 
 SYNC_BEGIN durably saves `sync_in_progress`, target/previous playlists, prior pending value,
@@ -144,8 +145,23 @@ PLAYLIST_COMMIT rescans all five slots and atomically writes the target playlist
 size/CRC matches. NVS failure restores the saved previous playlist and previous pending value.
 `sync_in_progress` remains true until active playlist and pending are durable, so timer boots retain
 the existing EPD contents and never display a partial sync. Disconnect removes only unfinished temp;
-target, completed bitmap, and committed slots remain resumable. APPLY is accepted once after the
-single final playlist commit, then the established restart/pending-display flow runs.
+target, completed bitmap, and committed slots remain resumable. During resume, active playlist
+metadata is returned without comparing its intentionally stale CRCs to partially replaced slots;
+target completion alone is reconciled against the physical catalog. The sender resumes only when
+the entire encoded target (version, revision, count, ordered slots/CRCs, and interval) matches. A
+same-revision mismatch is rejected and the original sync must be completed first.
+
+APPLY is accepted once after the single final playlist commit. On reconnect it is accepted only when
+sync is no longer in progress and both the committed-playlist state and durable pending marker agree;
+an old pending value can never make an incomplete sync APPLY-ready.
+
+## Incomplete-sync power policy
+
+Release builds encountering `sync_in_progress` preserve all metadata and the existing physical EPD
+contents, enable GPIO16 `ESP_EXT1_WAKEUP_ANY_HIGH`, and enter EXT1-only deep sleep with no timer.
+The user resumes via the externally driven idle-LOW/press-HIGH button. This is separate from the
+normal playlist interval (300 seconds by default) and ordinary failures' 60-second retry timer.
+Development builds remain awake with USB Serial diagnostics as before.
 
 ## Python test sender
 
@@ -173,14 +189,25 @@ once, recovers its persisted offset, and retransmits from that offset.
 
 ## Transfer board verification (not CI)
 
-CI/host checks cover packet constants and endian helpers, CRC reference behavior, offset branches,
-slot/size guards, bounded queues, rollback calls, the Python CLI, and both firmware builds. Hardware
+CI/host checks compile and execute the real protocol, sync validation, APPLY policy, and recovery
+transition algorithm with injected operation failures; Python tests execute complete-target matching,
+incremental slot planning, and notification timeout recovery. LittleFS and NVS driver integration plus
+power interruption remain hardware tests. Hardware
 acceptance must separately migrate legacy patterns, sync 1 then 5 frames, reorder without DATA,
 replace one frame, disconnect before FINISH, and cut power at marker, both renames, completed-bitmap,
 marker-commit, playlist, pending, and cleanup boundaries. Confirm PREPARED restores old, COMMITTED
 keeps new, an incomplete sync never refreshes EPD, reconnect skips completed CRCs, and exactly one
 PLAYLIST_COMMITTED precedes one APPLYING. Finally allow five timer wakes to confirm playlist order and
 the configured 300-second default interval.
+
+Exact repository checks are:
+
+```sh
+python3 -m unittest discover -s test -v
+python3 -m py_compile scripts/ble_send_test.py scripts/generate_test_images.py
+python3 -m platformio run -e esp32-s3-dev -e esp32-s3-release
+python3 -m platformio run -e esp32-s3-dev -t buildfs
+```
 
 Before every release-build sleep, the firmware enables the five-minute timer and EXT1 wake. If the
 button is still HIGH, it waits at most 10 seconds for LOW while feeding the watchdog. On timeout it

@@ -67,6 +67,54 @@ class SenderRecoveryTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "1-5"):
             sender.encode_playlist(1, images, 300)
 
+    def test_resume_requires_complete_target_equality(self):
+        images = [sender.Image(Path("a"), b"", 10, 2), sender.Image(Path("b"), b"", 20, 4)]
+        encoded = sender.encode_playlist(7, images, 300)
+        stored = sender.decode_playlist(encoded)
+        self.assertTrue(sender.playlist_matches(encoded, stored))
+        variants = []
+        reversed_images = list(reversed(images))
+        variants.append(sender.encode_playlist(7, reversed_images, 300))
+        variants.append(sender.encode_playlist(7,
+            [sender.Image(Path("a"), b"", 11, 2), images[1]], 300))
+        variants.append(sender.encode_playlist(7, images[:1], 300))
+        variants.append(sender.encode_playlist(7, images, 301))
+        for different in variants:
+            self.assertFalse(sender.playlist_matches(different, stored))
+
+    def test_interval_bounds_constants_match_firmware_policy(self):
+        self.assertEqual(sender.MIN_INTERVAL_SECONDS, 60)
+        self.assertEqual(sender.DEFAULT_INTERVAL_SECONDS, 300)
+        self.assertEqual(sender.MAX_INTERVAL_SECONDS, 86400)
+        image = sender.Image(Path("a"), b"", 1, 0)
+        with self.assertRaisesRegex(ValueError, "interval"):
+            sender.encode_playlist(1, [image], 59)
+        with self.assertRaisesRegex(ValueError, "interval"):
+            sender.encode_playlist(1, [image], 86401)
+
+    def test_partial_catalog_reconnect_skips_completed_slot_and_resumes_rest(self):
+        requested = [sender.Image(Path("new-a"), b"", 1000, 1),
+                     sender.Image(Path("new-b"), b"", 2000, 3)]
+        target_bytes = sender.encode_playlist(12, requested, 300)
+        active = sender.encode_playlist(11,
+            [sender.Image(Path("old-a"), b"", 10, 1),
+             sender.Image(Path("old-b"), b"", 20, 3)], 300)
+        entries = bytearray()
+        current = {0: 0, 1: 1000, 2: 0, 3: 20, 4: 0}
+        for slot in range(5):
+            valid = current[slot] != 0
+            entries += struct.pack("<BBII", slot, 3 if valid else 0,
+                                   sender.IMAGE_BYTES if valid else 0, current[slot])
+        packet = bytes([1, 5, 1, 1 << 1]) + entries + active + target_bytes
+        catalog = sender.decode_catalog(packet)
+        self.assertTrue(sender.playlist_matches(target_bytes, catalog["target"]))
+        for image in requested:
+            image.slot = dict(zip(catalog["target"]["crcs"],
+                                  catalog["target"]["slots"]))[image.crc]
+        uploads = [image for image in requested
+                   if catalog["entries"][image.slot]["crc"] != image.crc]
+        self.assertEqual([image.slot for image in uploads], [3])
+
 
 if __name__ == "__main__":
     unittest.main()

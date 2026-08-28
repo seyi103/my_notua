@@ -42,6 +42,7 @@ bool gDeviceInitialized = false;
 notua::storage::ImageStorage gStorage;
 notua::storage::PlaylistStore gPlaylistStore;
 bool gCommitted = false;
+bool gPendingDurable = false;
 bool gApplyRequested = false;
 
 bool refreshCatalogValue() {
@@ -49,12 +50,12 @@ bool refreshCatalogValue() {
     CatalogEntry entries[MAX_IMAGES];
     if (!scanFixedCatalog(LittleFS, entries)) return false;
     Playlist active{};
-    if (!gPlaylistStore.loadActive(entries, active)) return false;
     Playlist target{}; uint8_t completed = 0; SyncStage stage = SyncStage::idle;
     if (gPlaylistStore.syncInProgress()) {
-        if (!gPlaylistStore.reconcileCompleted(entries)
+        if (!gPlaylistStore.loadActiveMetadata(active)
+            || !gPlaylistStore.reconcileCompleted(entries)
             || !gPlaylistStore.loadTarget(target, completed, stage)) return false;
-    }
+    } else if (!gPlaylistStore.loadActiveValidated(entries, active)) return false;
     uint8_t bytes[CATALOG_BYTES]; encodeCatalog(bytes, entries, active, target, stage, completed);
     if (gCatalogCharacteristic) gCatalogCharacteristic->setValue(bytes, sizeof(bytes));
     return true;
@@ -232,7 +233,8 @@ bool beginBlePeripheral() {
     if (!refreshCatalogValue()) { cleanupAfterInitializationFailure("catalog"); return false; }
     Preferences pendingPreferences;
     if (pendingPreferences.begin("photo-cycle", true)) {
-        gCommitted = pendingPreferences.getString("pending", "").length() != 0;
+        gPendingDurable = pendingPreferences.getString("pending", "").length() != 0;
+        gCommitted = !pendingPreferences.getBool("sync", false) && gPendingDurable;
         pendingPreferences.end();
     }
     service->start();
@@ -271,7 +273,8 @@ void pollBlePeripheral() {
             {
                 Preferences pending;
                 if (pending.begin("photo-cycle", true)) {
-                    gCommitted = pending.getString("pending", "").length() != 0;
+                    gPendingDurable = pending.getString("pending", "").length() != 0;
+                    gCommitted = !pending.getBool("sync", false) && gPendingDurable;
                     pending.end();
                 }
             }
@@ -380,12 +383,15 @@ void pollBlePeripheral() {
             if (!notua::storage::scanFixedCatalog(LittleFS, catalog)
                 || !gPlaylistStore.commitTarget(catalog, pending) || !refreshCatalogValue())
                 publishStatus(Status::notReady, 0);
-            else { gCommitted = true; publishStatus(Status::playlistCommitted, 0); }
+            else { gCommitted = true; gPendingDurable = true;
+                publishStatus(Status::playlistCommitted, 0); }
         } else if (isSimpleCommand(transfer.bytes, transfer.length, Opcode::getCatalog)) {
             if (!refreshCatalogValue()) publishStatus(Status::storageError, 0);
             else publishStatus(Status::ack, 0);
         } else if (isSimpleCommand(transfer.bytes, transfer.length, Opcode::apply)) {
-            if (!gCommitted) publishStatus(Status::notReady, gStorage.offset());
+            if (!notua::storage::applyAllowed(gPlaylistStore.syncInProgress(),
+                    gCommitted, gPendingDurable))
+                publishStatus(Status::notReady, gStorage.offset());
             else { publishStatus(Status::applying, gStorage.offset()); gApplyRequested = true; }
         } else publishStatus(Status::badCommand, gStorage.offset(), transfer.length);
     }

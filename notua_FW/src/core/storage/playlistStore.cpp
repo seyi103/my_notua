@@ -19,7 +19,11 @@ bool PlaylistStore::getPlaylist(const char* key, Playlist& playlist) {
         && decodePlaylist(bytes, sizeof(bytes), playlist);
 }
 
-bool PlaylistStore::loadActive(const CatalogEntry catalog[MAX_IMAGES], Playlist& playlist) {
+bool PlaylistStore::loadActiveMetadata(Playlist& playlist) {
+    return getPlaylist("playlist", playlist);
+}
+
+bool PlaylistStore::loadActiveValidated(const CatalogEntry catalog[MAX_IMAGES], Playlist& playlist) {
     if (getPlaylist("playlist", playlist)) {
         for (uint8_t i = 0; i < playlist.count; ++i) {
             const uint8_t slot = playlist.slots[i];

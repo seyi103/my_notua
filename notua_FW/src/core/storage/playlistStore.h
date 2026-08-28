@@ -8,7 +8,8 @@ namespace notua::storage {
 class PlaylistStore {
 public:
     bool begin();
-    bool loadActive(const CatalogEntry catalog[MAX_IMAGES], Playlist& playlist);
+    bool loadActiveValidated(const CatalogEntry catalog[MAX_IMAGES], Playlist& playlist);
+    bool loadActiveMetadata(Playlist& playlist);
     bool syncInProgress();
     bool loadTarget(Playlist& target, uint8_t& completedBitmap, SyncStage& stage);
     bool beginSync(const Playlist& target);
