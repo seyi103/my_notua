@@ -17,6 +17,7 @@ class ProtocolExecutableTest(unittest.TestCase):
             #include <cstdint>
             #include "core/ble/transferProtocol.h"
             #include "core/storage/syncModel.h"
+            #include "core/power/wakePolicy.h"
             using namespace notua::transfer;
             struct FakeRecovery : notua::storage::RecoveryIo {
                 bool target=true, backup=true, aside=false, marker=true;
@@ -83,6 +84,18 @@ class ProtocolExecutableTest(unittest.TestCase):
                 FakeRecovery cleanup; cleanup.failCleanup=true;
                 assert(executeRecovery(cleanup,SyncStage::committed)==RecoveryResult::cleanupFailed);
                 assert(cleanup.target && cleanup.backup && cleanup.marker);
+                using notua::power::selectWakeSources;
+                auto slideshow=selectWakeSources(300000000ULL,true);
+                assert(slideshow.ext1Enabled && slideshow.timerUs==300000000ULL);
+                auto syncWait=selectWakeSources(0,true);
+                assert(syncWait.ext1Enabled && syncWait.timerUs==0);
+                auto stuck=selectWakeSources(0,false);
+                assert(!stuck.ext1Enabled && stuck.timerUs==notua::power::STUCK_BUTTON_FALLBACK_US);
+                auto error=selectWakeSources(60000000ULL,true);
+                assert(error.ext1Enabled && error.timerUs==60000000ULL);
+                auto stuckError=selectWakeSources(60000000ULL,false);
+                assert(!stuckError.ext1Enabled && stuckError.timerUs==notua::power::STUCK_BUTTON_FALLBACK_US);
+                assert(stuck.ext1Enabled || stuck.timerUs!=0); // Never zero wake sources.
             }
         """)
         with tempfile.TemporaryDirectory() as directory:
@@ -91,6 +104,7 @@ class ProtocolExecutableTest(unittest.TestCase):
                 "g++", "-std=c++17", "-I", str(ROOT / "src"), "-x", "c++", "-",
                 str(ROOT / "src/core/ble/transferProtocol.cpp"), "-o", str(binary),
                 str(ROOT / "src/core/storage/syncModel.cpp"),
+                str(ROOT / "src/core/power/wakePolicy.cpp"),
             ], input=source, text=True, check=True)
             subprocess.run([binary], check=True)
 

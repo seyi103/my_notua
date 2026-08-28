@@ -163,6 +163,15 @@ The user resumes via the externally driven idle-LOW/press-HIGH button. This is s
 normal playlist interval (300 seconds by default) and ordinary failures' 60-second retry timer.
 Development builds remain awake with USB Serial diagnostics as before.
 
+The same sync-wait policy is selected for BLE inactivity, advertising/runtime failure, or other BLE
+session exits after persistent `sync_in_progress` is captured and before BLE teardown. A normal BLE
+timeout without an incomplete sync retains the existing five-minute timer policy. Wake-source
+selection is explicit: successful slideshow sleep uses configured playlist timer + EXT1; ordinary
+error retry uses the retry timer + EXT1 when available; incomplete sync uses EXT1 only after GPIO16
+returns LOW. If GPIO16 remains HIGH for the release timeout (or EXT1 configuration fails), EXT1 is
+disabled and a five-minute fallback timer is armed. Thus the stuck-button protection cannot enter a
+zero-wake-source sleep.
+
 ## Python test sender
 
 Install Python 3.10+ and Bleak with `python -m pip install bleak`. On Windows, use a machine with
@@ -209,12 +218,10 @@ python3 -m platformio run -e esp32-s3-dev -e esp32-s3-release
 python3 -m platformio run -e esp32-s3-dev -t buildfs
 ```
 
-Before every release-build sleep, the firmware enables the five-minute timer and EXT1 wake. If the
-button is still HIGH, it waits at most 10 seconds for LOW while feeding the watchdog. On timeout it
-logs an error and disables EXT1 for that one sleep, preventing an immediate wake loop; the timer
-remains available. The development build continues the established no-deep-sleep policy, including
-after a BLE timeout. Consequently button-wake sleep/re-wake acceptance testing must use the release
-environment.
+Before any EXT1-capable release sleep, firmware waits at most 10 seconds for GPIO16 LOW while feeding
+the watchdog. A stuck-HIGH input disables EXT1 for that sleep and logs the five-minute fallback timer.
+The development build continues the established no-deep-sleep policy, including after BLE timeout.
+Consequently button-wake sleep/re-wake acceptance testing must use the release environment.
 
 ## Button/BLE production-board test
 
@@ -224,7 +231,8 @@ environment.
    then confirm the next timer wake is `timer_photo_cycle` and advances exactly one image.
 3. While asleep, drive GPIO16 HIGH with the physical button, then release it. Confirm an EXT1 wake
    mask containing bit 16 (`0x10000`), route `button_ble`, successful BLE initialization, and
-   `advertising_started=true`. Confirm there is no LittleFS, NVS-index, or EPD-refresh log.
+   `advertising_started=true`. The mandatory LittleFS recovery mount is expected; confirm there is no
+   NVS slideshow-index update, panel power-up, or EPD-refresh log.
 4. In a phone BLE scanner, find `Notua`, connect, discover the documented service and characteristic,
    and read `ready`. Confirm the connect log. Disconnect, confirm the disconnect/re-advertising log,
    reconnect within 30 seconds, and confirm another connect log.

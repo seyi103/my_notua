@@ -14,6 +14,7 @@
 #include "core/epd/t2001/t2001_service.h"
 #include "core/power/boardPower.h"
 #include "core/power/watchdog.h"
+#include "core/power/wakePolicy.h"
 #include "core/storage/imageCatalog.h"
 #include "core/storage/imageStorage.h"
 #include "core/storage/playlistStore.h"
@@ -69,7 +70,7 @@ const char* wakePathName(WakePath path) {
     return "unknown";
 }
 
-void configureButtonWake() {
+bool configureButtonWake() {
     pinMode(SW_PIN, INPUT);
     rtc_gpio_pullup_dis(static_cast<gpio_num_t>(SW_PIN));
     rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(SW_PIN));
@@ -77,24 +78,30 @@ void configureButtonWake() {
         SW_WAKE_MASK, ESP_EXT1_WAKEUP_ANY_HIGH);
     logInfo(TAG, "EXT1 configured: gpio=%u mask=0x%llx any_high=true result=%d",
         SW_PIN, SW_WAKE_MASK, static_cast<int>(result));
+    return result == ESP_OK;
 }
 
 void enterDeepSleep(uint64_t timerUs, const char* reason) {
-    configureButtonWake();
+    const bool ext1Configured = configureButtonWake();
     const uint32_t started = millis();
     while (digitalRead(SW_PIN) == HIGH && millis() - started < BUTTON_RELEASE_TIMEOUT_MS) {
         feedWatchdog();
         delay(25);
     }
-    if (digitalRead(SW_PIN) == HIGH) {
-        logError(TAG, "GPIO16 remained HIGH for %u ms; disabling EXT1 for this sleep",
-            static_cast<unsigned>(BUTTON_RELEASE_TIMEOUT_MS));
+    const bool buttonReleased = digitalRead(SW_PIN) == LOW;
+    const auto wakePlan = notua::power::selectWakeSources(timerUs,
+        buttonReleased && ext1Configured);
+    if (!wakePlan.ext1Enabled) {
+        logError(TAG, "%s; EXT1 disabled, fallback timer armed for %llu seconds",
+            buttonReleased ? "EXT1 configuration failed" : "GPIO16 remained HIGH after release timeout",
+            wakePlan.timerUs / 1000000ULL);
         esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1);
     }
-    if (timerUs != 0) {
-        esp_sleep_enable_timer_wakeup(timerUs);
+    if (wakePlan.timerUs != 0) {
+        esp_sleep_enable_timer_wakeup(wakePlan.timerUs);
     }
-    logInfo(TAG, "deep sleep: reason=%s timer_s=%llu", reason, timerUs / 1000000ULL);
+    logInfo(TAG, "deep sleep: reason=%s ext1=%s timer_s=%llu", reason,
+        wakePlan.ext1Enabled ? "enabled" : "disabled", wakePlan.timerUs / 1000000ULL);
     Serial.flush();
     esp_deep_sleep_start();
 }
@@ -121,6 +128,30 @@ const char* runResultName(RunResult result) {
         return "sync_in_progress";
     }
     return "unknown";
+}
+
+bool persistentSyncInProgress() {
+    Preferences preferences;
+    if (!preferences.begin("photo-cycle", true)) return false;
+    const bool active = preferences.getBool("sync", false);
+    preferences.end();
+    return active;
+}
+
+void stopBleForSleep(uint64_t ordinaryTimerUs, const char* ordinaryReason) {
+    const bool syncWaiting = persistentSyncInProgress();
+    stopBlePeripheral();
+#if NOTUA_ALLOW_DEEP_SLEEP
+    if (syncWaiting) {
+        logInfo(TAG, "BLE exit with incomplete sync; entering reusable EXT1-only sync wait");
+        enterDeepSleep(0, "sync_wait_button");
+    }
+    enterDeepSleep(ordinaryTimerUs, ordinaryReason);
+#else
+    logInfo(TAG, "development policy: BLE stopped; deep sleep disabled (sync_in_progress=%s)",
+        syncWaiting ? "true" : "false");
+    gTerminal = true;
+#endif
 }
 
 uint8_t* loadImage(const String& path) {
@@ -250,7 +281,7 @@ void setup() {
             initialized ? "success" : "failed", bleStateName(bleState()));
         if (!initialized) {
 #if NOTUA_ALLOW_DEEP_SLEEP
-            enterDeepSleep(ERROR_RETRY_INTERVAL_US, "ble_initialization_failed");
+            stopBleForSleep(ERROR_RETRY_INTERVAL_US, "ble_initialization_failed");
 #else
             gTerminal = true;
 #endif
@@ -365,22 +396,10 @@ void loop() {
         }
         const BleState currentBleState = bleState();
         if (currentBleState == BleState::initializationFailed && !gTerminal) {
-            stopBlePeripheral();
-#if NOTUA_ALLOW_DEEP_SLEEP
-            enterDeepSleep(ERROR_RETRY_INTERVAL_US, "ble_runtime_error");
-#else
-            logError(TAG, "development policy: BLE runtime error; deep sleep disabled");
-            gTerminal = true;
-#endif
+            stopBleForSleep(ERROR_RETRY_INTERVAL_US, "ble_runtime_error");
         } else if (bleSessionExpired()) {
             logInfo(TAG, "BLE inactivity timeout: state=%s", bleStateName(currentBleState));
-            stopBlePeripheral();
-#if NOTUA_ALLOW_DEEP_SLEEP
-            enterDeepSleep(SLEEP_INTERVAL_US, "ble_timeout");
-#else
-            logInfo(TAG, "development policy: deep sleep disabled after BLE timeout");
-            gTerminal = true;
-#endif
+            stopBleForSleep(SLEEP_INTERVAL_US, "ble_timeout");
         }
         if (gTerminal) {
             const uint32_t now = millis();
