@@ -6,6 +6,7 @@ import struct
 import sys
 import types
 import unittest
+from pathlib import Path
 
 fake_bleak = types.ModuleType("bleak")
 fake_bleak.BleakClient = object
@@ -46,6 +47,25 @@ class SenderRecoveryTest(unittest.IsolatedAsyncioTestCase):
     def test_malformed_status_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "expected 12"):
             sender.decode_status(b"short")
+
+    def test_crc_reuse_order_only_and_one_change_plans(self):
+        catalog = {"entries": [
+            {"slot": slot, "valid": True, "crc": 100 + slot} for slot in range(5)
+        ]}
+        reordered = [sender.Image(Path(str(crc)), b"", crc) for crc in (104, 102, 100)]
+        sender.assign_slots(reordered, catalog)
+        self.assertEqual([image.slot for image in reordered], [4, 2, 0])
+        self.assertTrue(all(catalog["entries"][image.slot]["crc"] == image.crc for image in reordered))
+        one_changed = [sender.Image(Path(str(crc)), b"", crc) for crc in (100, 101, 999)]
+        sender.assign_slots(one_changed, catalog)
+        uploads = [image for image in one_changed
+                   if catalog["entries"][image.slot]["crc"] != image.crc]
+        self.assertEqual(len(uploads), 1)
+
+    def test_sixth_image_playlist_is_rejected(self):
+        images = [sender.Image(Path(str(i)), b"", i + 1, i) for i in range(6)]
+        with self.assertRaisesRegex(ValueError, "1-5"):
+            sender.encode_playlist(1, images, 300)
 
 
 if __name__ == "__main__":

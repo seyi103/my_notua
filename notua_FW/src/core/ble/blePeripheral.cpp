@@ -3,6 +3,8 @@
 #include "core/diag/log.h"
 #include "core/ble/transferProtocol.h"
 #include "core/storage/imageStorage.h"
+#include "core/storage/imageCatalog.h"
+#include "core/storage/playlistStore.h"
 
 #include <NimBLEDevice.h>
 #include <Preferences.h>
@@ -17,6 +19,7 @@ constexpr const char* STATUS_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210002";
 constexpr const char* CONTROL_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210003";
 constexpr const char* DATA_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210004";
 constexpr const char* TRANSFER_STATUS_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210005";
+constexpr const char* CATALOG_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210006";
 constexpr uint32_t INITIAL_ADVERTISING_MS = 60UL * 1000UL;
 constexpr uint32_t RECONNECT_ADVERTISING_MS = 30UL * 1000UL;
 constexpr uint32_t CONNECTED_INACTIVITY_MS = 120UL * 1000UL;
@@ -34,10 +37,28 @@ QueueHandle_t gLifecycleQueue = nullptr;
 QueueHandle_t gActivityQueue = nullptr;
 NimBLEServer* gServer = nullptr;
 NimBLECharacteristic* gTransferStatus = nullptr;
+NimBLECharacteristic* gCatalogCharacteristic = nullptr;
 bool gDeviceInitialized = false;
 notua::storage::ImageStorage gStorage;
+notua::storage::PlaylistStore gPlaylistStore;
 bool gCommitted = false;
 bool gApplyRequested = false;
+
+bool refreshCatalogValue() {
+    using namespace notua::storage;
+    CatalogEntry entries[MAX_IMAGES];
+    if (!scanFixedCatalog(LittleFS, entries)) return false;
+    Playlist active{};
+    if (!gPlaylistStore.loadActive(entries, active)) return false;
+    Playlist target{}; uint8_t completed = 0; SyncStage stage = SyncStage::idle;
+    if (gPlaylistStore.syncInProgress()) {
+        if (!gPlaylistStore.reconcileCompleted(entries)
+            || !gPlaylistStore.loadTarget(target, completed, stage)) return false;
+    }
+    uint8_t bytes[CATALOG_BYTES]; encodeCatalog(bytes, entries, active, target, stage, completed);
+    if (gCatalogCharacteristic) gCatalogCharacteristic->setValue(bytes, sizeof(bytes));
+    return true;
+}
 
 enum class TransferEventType : uint8_t { control, data };
 struct TransferEvent { TransferEventType type; uint16_t length; uint8_t bytes[notua::transfer::MAX_GATT_VALUE_BYTES]; };
@@ -130,6 +151,7 @@ void cleanupAfterInitializationFailure(const char* step) {
     gDeviceInitialized = false;
     gServer = nullptr;
     gTransferStatus = nullptr;
+    gCatalogCharacteristic = nullptr;
     if (gLifecycleQueue) {
         vQueueDelete(gLifecycleQueue);
         gLifecycleQueue = nullptr;
@@ -140,6 +162,7 @@ void cleanupAfterInitializationFailure(const char* step) {
     }
     if (gTransferQueue) { vQueueDelete(gTransferQueue); gTransferQueue = nullptr; }
     if (gFeedbackQueue) { vQueueDelete(gFeedbackQueue); gFeedbackQueue = nullptr; }
+    gPlaylistStore.end();
     gState = BleState::initializationFailed;
 }
 } // namespace
@@ -161,7 +184,8 @@ bool beginBlePeripheral() {
     gActivityQueue = xQueueCreate(1, sizeof(BleEvent));
     gTransferQueue = xQueueCreate(TRANSFER_QUEUE_LENGTH, sizeof(TransferEvent));
     gFeedbackQueue = xQueueCreate(TRANSFER_QUEUE_LENGTH, sizeof(FeedbackEvent));
-    if (!gLifecycleQueue || !gActivityQueue || !gTransferQueue || !gFeedbackQueue || !gStorage.begin()) {
+    if (!gLifecycleQueue || !gActivityQueue || !gTransferQueue || !gFeedbackQueue
+        || !gStorage.begin() || !gPlaylistStore.begin()) {
         cleanupAfterInitializationFailure("event_queue");
         return false;
     }
@@ -196,13 +220,21 @@ bool beginBlePeripheral() {
     NimBLECharacteristic* data = service->createCharacteristic(DATA_UUID, NIMBLE_PROPERTY::WRITE_NR);
     gTransferStatus = service->createCharacteristic(TRANSFER_STATUS_UUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
-    if (!control || !data || !gTransferStatus) {
+    gCatalogCharacteristic = service->createCharacteristic(CATALOG_UUID, NIMBLE_PROPERTY::READ);
+    if (!control || !data || !gTransferStatus || !gCatalogCharacteristic) {
         cleanupAfterInitializationFailure("transfer_characteristics"); return false;
     }
     control->setCallbacks(&gControlCallbacks); data->setCallbacks(&gDataCallbacks);
     uint8_t initial[notua::transfer::STATUS_BYTES];
     notua::transfer::encodeStatus(initial, notua::transfer::Status::notReady, 0, 0);
     gTransferStatus->setValue(initial, sizeof(initial));
+    gCatalogCharacteristic->setCallbacks(&gStatusCallbacks);
+    if (!refreshCatalogValue()) { cleanupAfterInitializationFailure("catalog"); return false; }
+    Preferences pendingPreferences;
+    if (pendingPreferences.begin("photo-cycle", true)) {
+        gCommitted = pendingPreferences.getString("pending", "").length() != 0;
+        pendingPreferences.end();
+    }
     service->start();
 
     NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
@@ -236,6 +268,13 @@ void pollBlePeripheral() {
             gStateStartedMs = now;
             logInfo(TAG, "client connected; inactivity_timeout_s=%u",
                 static_cast<unsigned>(CONNECTED_INACTIVITY_MS / 1000));
+            {
+                Preferences pending;
+                if (pending.begin("photo-cycle", true)) {
+                    gCommitted = pending.getString("pending", "").length() != 0;
+                    pending.end();
+                }
+            }
             break;
         case BleEventType::gattActivity: break; // Activity uses its dedicated coalescing queue.
         case BleEventType::disconnected: {
@@ -283,8 +322,14 @@ void pollBlePeripheral() {
         StartCommand start{};
         if (parseStart(transfer.bytes, transfer.length, start)) {
             if (start.size != IMAGE_BYTES) publishStatus(Status::badSize, 0, start.size);
-            else if (start.slot > 2) publishStatus(Status::badCommand, 0, start.slot);
+            else if (start.slot >= notua::storage::MAX_IMAGES) publishStatus(Status::badCommand, 0, start.slot);
             else {
+                notua::storage::Playlist target{}; uint8_t done = 0;
+                notua::storage::SyncStage stage{};
+                bool expected = false;
+                if (gPlaylistStore.loadTarget(target, done, stage)) for (uint8_t i = 0; i < target.count; ++i)
+                    if (target.slots[i] == start.slot && target.crc32[i] == start.crc32) expected = true;
+                if (!expected) { publishStatus(Status::notReady, 0, start.slot); continue; }
                 const auto result = gStorage.start(start.slot, start.size, start.crc32);
                 using notua::storage::StartResult;
                 if (result == StartResult::ok) { gCommitted = false; publishStatus(Status::startAccepted, 0); }
@@ -296,32 +341,49 @@ void pollBlePeripheral() {
             }
         } else if (isSimpleCommand(transfer.bytes, transfer.length, Opcode::abort)) {
             gStorage.abort(); gCommitted = false; publishStatus(Status::ack, 0);
+        } else if (transfer.length == 2 + notua::storage::PLAYLIST_BYTES
+            && transfer.bytes[0] == VERSION && transfer.bytes[1] == static_cast<uint8_t>(Opcode::syncBegin)) {
+            notua::storage::Playlist target{};
+            if (!notua::storage::decodePlaylist(transfer.bytes + 2,
+                    notua::storage::PLAYLIST_BYTES, target)
+                || !gPlaylistStore.beginSync(target) || !refreshCatalogValue())
+                publishStatus(Status::badCommand, 0);
+            else { gCommitted = false; publishStatus(Status::syncAccepted, 0); }
         } else if (isSimpleCommand(transfer.bytes, transfer.length, Opcode::finish)) {
             uint32_t detail = 0; const auto result = gStorage.finish(detail);
             using notua::storage::CommitResult;
             if (result == CommitResult::committed) {
-                Preferences preferences;
-                const bool opened = preferences.begin("photo-cycle", false);
-                const bool stored = opened
-                    && preferences.putString("pending", gStorage.committedPath()) != 0;
-                if (!stored) {
-                    if (opened) { preferences.remove("pending"); preferences.end(); }
+                if (!gPlaylistStore.markSlotComplete(gStorage.slot())) {
                     const auto rollback = gStorage.rollbackCommit();
                     if (rollback != notua::storage::CleanupResult::ok)
                         logError(TAG, "commit rollback failed: result=%u", static_cast<unsigned>(rollback));
                     publishStatus(Status::storageError, gStorage.offset());
                 } else {
-                    preferences.end();
-                    const auto cleanup = gStorage.finalizeCommit();
-                    if (cleanup != notua::storage::CleanupResult::ok)
-                        logWarn(TAG, "commit cleanup incomplete: result=%u; final and pending remain valid",
-                            static_cast<unsigned>(cleanup));
-                    gCommitted = true; publishStatus(Status::committed, gStorage.offset());
+                    const auto durable = gStorage.markCommitDurable();
+                    if (durable != notua::storage::CleanupResult::ok) {
+                        gStorage.rollbackCommit(); refreshCatalogValue();
+                        publishStatus(Status::storageError, gStorage.offset(), static_cast<uint32_t>(durable));
+                    } else {
+                        const auto cleanup = gStorage.finalizeCommit();
+                        if (cleanup != notua::storage::CleanupResult::ok)
+                            logWarn(TAG, "commit cleanup incomplete: result=%u; recovery will finish cleanup",
+                                static_cast<unsigned>(cleanup));
+                        refreshCatalogValue(); publishStatus(Status::committed, gStorage.offset());
+                    }
                 }
             } else if (result == CommitResult::badSize) publishStatus(Status::badSize, gStorage.offset(), detail);
             else if (result == CommitResult::crcMismatch) publishStatus(Status::crcMismatch, gStorage.offset(), detail);
             else if (result == CommitResult::notReady) publishStatus(Status::notReady, gStorage.offset());
             else publishStatus(Status::storageError, gStorage.offset(), static_cast<uint32_t>(result));
+        } else if (isSimpleCommand(transfer.bytes, transfer.length, Opcode::playlistCommit)) {
+            notua::storage::CatalogEntry catalog[notua::storage::MAX_IMAGES]; String pending;
+            if (!notua::storage::scanFixedCatalog(LittleFS, catalog)
+                || !gPlaylistStore.commitTarget(catalog, pending) || !refreshCatalogValue())
+                publishStatus(Status::notReady, 0);
+            else { gCommitted = true; publishStatus(Status::playlistCommitted, 0); }
+        } else if (isSimpleCommand(transfer.bytes, transfer.length, Opcode::getCatalog)) {
+            if (!refreshCatalogValue()) publishStatus(Status::storageError, 0);
+            else publishStatus(Status::ack, 0);
         } else if (isSimpleCommand(transfer.bytes, transfer.length, Opcode::apply)) {
             if (!gCommitted) publishStatus(Status::notReady, gStorage.offset());
             else { publishStatus(Status::applying, gStorage.offset()); gApplyRequested = true; }
@@ -375,7 +437,9 @@ void stopBlePeripheral() {
     gDeviceInitialized = false;
     gServer = nullptr;
     gTransferStatus = nullptr;
+    gCatalogCharacteristic = nullptr;
     gStorage.abort();
+    gPlaylistStore.end();
     if (gLifecycleQueue) {
         vQueueDelete(gLifecycleQueue);
         gLifecycleQueue = nullptr;

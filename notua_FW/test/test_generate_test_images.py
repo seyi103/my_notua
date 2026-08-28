@@ -9,7 +9,7 @@ from scripts import generate_test_images as generator
 
 class GenerateTestImagesTest(unittest.TestCase):
     def test_every_pattern_uses_only_the_spectra_palette(self) -> None:
-        for pattern in range(3):
+        for pattern in range(5):
             values = {
                 generator.pixel(pattern, x, y)
                 for x in range(0, generator.WIDTH, 37)

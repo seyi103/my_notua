@@ -1,5 +1,6 @@
 #include "core/storage/imageStorage.h"
 #include "core/storage/imageCatalog.h"
+#include "core/diag/log.h"
 
 #include <algorithm>
 
@@ -26,15 +27,30 @@ CleanupResult ImageStorage::recover() {
         if (!removeChecked(MARKER_PATH)) return CleanupResult::removeFailed;
         return CleanupResult::ok;
     }
-    // A backup is only left while replacing finalPath; identify its slot from a sidecar name.
+    // Marker is ASCII: P<slot> before durable sync progress, C<slot> after it.
     File marker = LittleFS.open(MARKER_PATH, FILE_READ);
-    String target = marker ? marker.readString() : String();
+    String value = marker ? marker.readString() : String();
     if (marker) marker.close();
-    if (!target.length()) return CleanupResult::backupRestoreFailed;
-    // Never remove a usable final merely to attempt recovery. Both copies and the marker are
-    // intentionally retained when final already exists so a later policy can resolve ambiguity.
-    if (LittleFS.exists(target)) return CleanupResult::backupRestoreFailed;
-    if (!LittleFS.rename(BACKUP_PATH, target)) return CleanupResult::backupRestoreFailed;
+    if (value.length() != 2 || (value[0] != 'P' && value[0] != 'C')
+        || value[1] < '0' || value[1] >= '0' + MAX_IMAGES) return CleanupResult::backupRestoreFailed;
+    const String target = String("/images/slot_") + String(value[1] - '0') + ".bin";
+    const SyncStage stage = value[0] == 'C' ? SyncStage::committed : SyncStage::prepared;
+    const RecoveryAction action = recoveryAction(stage, LittleFS.exists(target), true);
+    if (action == RecoveryAction::keepFinal) {
+        if (!removeChecked(BACKUP_PATH)) return CleanupResult::removeFailed;
+    } else if (action == RecoveryAction::restoreBackup) {
+        // PREPARED means old image wins. Move the new final aside so failed restoration never
+        // destroys the only usable copy.
+        if (LittleFS.exists(target)) {
+            if (!LittleFS.rename(target, ROLLBACK_PATH)) return CleanupResult::renameFailed;
+        }
+        if (!LittleFS.rename(BACKUP_PATH, target)) {
+            if (LittleFS.exists(ROLLBACK_PATH) && !LittleFS.rename(ROLLBACK_PATH, target))
+                return CleanupResult::backupRestoreFailed;
+            return CleanupResult::backupRestoreFailed;
+        }
+        if (!removeChecked(ROLLBACK_PATH)) return CleanupResult::removeFailed;
+    } else return CleanupResult::backupRestoreFailed;
     if (!removeChecked(MARKER_PATH)) return CleanupResult::removeFailed;
     return CleanupResult::ok;
 }
@@ -42,15 +58,16 @@ CleanupResult ImageStorage::recover() {
 StartResult ImageStorage::start(uint8_t slot, uint32_t size, uint32_t crc32) {
     if (abort() != CleanupResult::ok) return StartResult::cleanupFailed;
     if (size != notua::transfer::IMAGE_BYTES) return StartResult::badSize;
-    if (slot > 2) return StartResult::badSlot;
+    if (slot >= MAX_IMAGES) return StartResult::badSlot;
     if (!begin()) return StartResult::catalogError;
-    bool tooMany = false;
-    const auto images = collectImageCatalog(LittleFS, &tooMany);
-    if (tooMany || slot > images.size()) return StartResult::badSlot;
-    if (LittleFS.totalBytes() - LittleFS.usedBytes() < notua::transfer::IMAGE_BYTES)
+    const size_t total = LittleFS.totalBytes(), used = LittleFS.usedBytes(), free = total - used;
+    logInfo("STORAGE", "LittleFS upload capacity: total=%u used=%u free=%u required=%u margin=%u",
+        static_cast<unsigned>(total), static_cast<unsigned>(used), static_cast<unsigned>(free),
+        static_cast<unsigned>(IMAGE_BYTES + FILESYSTEM_SAFETY_MARGIN),
+        static_cast<unsigned>(FILESYSTEM_SAFETY_MARGIN));
+    if (free < IMAGE_BYTES + FILESYSTEM_SAFETY_MARGIN)
         return StartResult::noSpace;
-    finalPath_ = slot < images.size() ? images[slot]
-        : String("/images/notua_slot_") + String(slot) + ".bin";
+    slot_ = slot; finalPath_ = String("/images/slot_") + slot + ".bin";
     tempPath_ = TEMP_PATH;
     if (!removeChecked(TEMP_PATH)) return StartResult::cleanupFailed;
     file_ = LittleFS.open(tempPath_, FILE_WRITE);
@@ -71,7 +88,8 @@ CommitResult ImageStorage::commitAtomic() {
     if (replacing) {
         if (!removeChecked(BACKUP_PATH)) return CommitResult::finalToBackupFailed;
         File marker = LittleFS.open(MARKER_PATH, FILE_WRITE);
-        if (!marker || marker.print(finalPath_) != finalPath_.length()) {
+        const String markerValue = String("P") + slot_;
+        if (!marker || marker.print(markerValue) != markerValue.length()) {
             if (marker) marker.close();
             if (!removeChecked(MARKER_PATH)) return CommitResult::markerWriteFailed;
             return CommitResult::markerWriteFailed;
@@ -111,6 +129,18 @@ CleanupResult ImageStorage::finalizeCommit() {
     if (replacementPending_ && !removeChecked(BACKUP_PATH)) return CleanupResult::removeFailed;
     if (!removeChecked(MARKER_PATH)) return CleanupResult::removeFailed;
     replacementPending_ = false;
+    return CleanupResult::ok;
+}
+
+CleanupResult ImageStorage::markCommitDurable() {
+    if (!replacementPending_) return CleanupResult::ok;
+    File marker = LittleFS.open(MARKER_PATH, FILE_WRITE);
+    const String value = String("C") + slot_;
+    if (!marker || marker.print(value) != value.length()) {
+        if (marker) marker.close();
+        return CleanupResult::renameFailed;
+    }
+    marker.flush(); marker.close();
     return CleanupResult::ok;
 }
 

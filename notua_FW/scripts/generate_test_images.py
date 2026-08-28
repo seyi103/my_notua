@@ -16,7 +16,8 @@ def pixel(pattern: int, x: int, y: int) -> int:
         return SPECTRA_6_Y8_PALETTE[x * len(SPECTRA_6_Y8_PALETTE) // WIDTH]
     if pattern == 1:
         return SPECTRA_6_Y8_PALETTE[((x // 100) + (y // 100)) % 2]
-    palette_index = (x // 50 * 37 + y // 50 * 19) % len(SPECTRA_6_Y8_PALETTE)
+    palette_index = (x // (30 + pattern * 10) * (31 + pattern * 3)
+                     + y // (35 + pattern * 5) * (17 + pattern * 2)) % len(SPECTRA_6_Y8_PALETTE)
     return SPECTRA_6_Y8_PALETTE[palette_index]
 
 
@@ -39,7 +40,7 @@ def validate_image(path: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("data/images"))
-    parser.add_argument("--count", type=int, choices=(2, 3), default=3)
+    parser.add_argument("--count", type=int, choices=range(1, 6), default=3)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
 

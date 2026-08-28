@@ -16,6 +16,7 @@ class ProtocolExecutableTest(unittest.TestCase):
             #include <cassert>
             #include <cstdint>
             #include "core/ble/transferProtocol.h"
+            #include "core/storage/syncModel.h"
             using namespace notua::transfer;
             int main() {
                 uint8_t start[] = {1,1,2,0,0x00,0x4c,0x1d,0,0x78,0x56,0x34,0x12};
@@ -33,6 +34,26 @@ class ProtocolExecutableTest(unittest.TestCase):
                 assert(ack.persistedPacket());
                 assert(!ack.flush(true));
                 assert(!ack.persistedPacket()); assert(!ack.flush(false)); assert(ack.flush(true));
+                using namespace notua::storage;
+                for (uint8_t count=1; count<=MAX_IMAGES; ++count) {
+                    Playlist playlist{}; playlist.count=count; playlist.revision=9;
+                    playlist.intervalSeconds=300;
+                    for (uint8_t i=0;i<count;++i) { playlist.slots[i]=i; playlist.crc32[i]=i+1; }
+                    assert(validatePlaylist(playlist));
+                    uint8_t encoded[PLAYLIST_BYTES]; encodePlaylist(encoded,playlist);
+                    Playlist decoded{}; assert(decodePlaylist(encoded,sizeof(encoded),decoded));
+                    assert(decoded.count==count && decoded.revision==9);
+                }
+                Playlist sixth{}; sixth.count=6; sixth.intervalSeconds=300;
+                assert(!validatePlaylist(sixth));
+                CatalogEntry catalog[MAX_IMAGES]{};
+                for(uint8_t i=0;i<MAX_IMAGES;++i){catalog[i].slot=i;catalog[i].valid=true;catalog[i].crc32=100+i;}
+                assert(matchingSlot(catalog,102,0)==2);
+                assert(matchingSlot(catalog,102,1U<<2)==0xff);
+                assert(recoveryAction(SyncStage::prepared,true,true)==RecoveryAction::restoreBackup);
+                assert(recoveryAction(SyncStage::prepared,false,true)==RecoveryAction::restoreBackup);
+                assert(recoveryAction(SyncStage::committed,true,true)==RecoveryAction::keepFinal);
+                assert(recoveryAction(SyncStage::committed,false,true)==RecoveryAction::restoreBackup);
             }
         """)
         with tempfile.TemporaryDirectory() as directory:
@@ -40,6 +61,7 @@ class ProtocolExecutableTest(unittest.TestCase):
             subprocess.run([
                 "g++", "-std=c++17", "-I", str(ROOT / "src"), "-x", "c++", "-",
                 str(ROOT / "src/core/ble/transferProtocol.cpp"), "-o", str(binary),
+                str(ROOT / "src/core/storage/syncModel.cpp"),
             ], input=source, text=True, check=True)
             subprocess.run([binary], check=True)
 

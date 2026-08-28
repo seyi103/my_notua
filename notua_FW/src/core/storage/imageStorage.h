@@ -22,11 +22,13 @@ public:
     bool append(const uint8_t* data, size_t length);
     CommitResult finish(uint32_t& detail);
     CleanupResult finalizeCommit();
+    CleanupResult markCommitDurable();
     CleanupResult rollbackCommit();
     CleanupResult abort();
     bool active() const { return active_; }
     uint32_t offset() const { return offset_; }
     const String& committedPath() const { return finalPath_; }
+    uint8_t slot() const { return slot_; }
 private:
     CleanupResult recover();
     CommitResult commitAtomic();
@@ -38,6 +40,7 @@ private:
     bool mounted_ = false;
     bool active_ = false;
     bool replacementPending_ = false;
+    uint8_t slot_ = 0xff;
     notua::transfer::Crc32 crc_;
 };
 

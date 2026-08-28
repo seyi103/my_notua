@@ -15,6 +15,8 @@
 #include "core/power/boardPower.h"
 #include "core/power/watchdog.h"
 #include "core/storage/imageCatalog.h"
+#include "core/storage/imageStorage.h"
+#include "core/storage/playlistStore.h"
 
 namespace {
 constexpr const char* TAG = "PHOTO_CYCLE";
@@ -43,6 +45,7 @@ enum class RunResult {
     image_load_failed,
     display_failed,
     index_persist_failed,
+    sync_in_progress,
 };
 
 enum class WakePath {
@@ -55,6 +58,7 @@ RunResult gLastRunResult = RunResult::success;
 bool gTerminal = false;
 uint32_t gLastTerminalLogMs = 0;
 WakePath gWakePath = WakePath::existingPolicy;
+uint64_t gConfiguredSleepUs = SLEEP_INTERVAL_US;
 
 const char* wakePathName(WakePath path) {
     switch (path) {
@@ -113,15 +117,10 @@ const char* runResultName(RunResult result) {
         return "display_failed";
     case RunResult::index_persist_failed:
         return "index_persist_failed";
+    case RunResult::sync_in_progress:
+        return "sync_in_progress";
     }
     return "unknown";
-}
-
-std::vector<String> findValidImages() {
-    bool tooMany = false;
-    auto images = notua::storage::collectImageCatalog(LittleFS, &tooMany);
-    if (tooMany) logWarn(TAG, "more than three valid images found; using first three sorted paths");
-    return images;
 }
 
 uint8_t* loadImage(const String& path) {
@@ -176,7 +175,7 @@ void finishRun(RunResult result) {
 
 #if NOTUA_ALLOW_DEEP_SLEEP
     const uint64_t sleepIntervalUs = result == RunResult::success
-        ? SLEEP_INTERVAL_US
+        ? gConfiguredSleepUs
         : ERROR_RETRY_INTERVAL_US;
     if (result == RunResult::success) {
         logInfo(TAG, "release complete: result=%s; deep sleep for %llu seconds",
@@ -223,6 +222,19 @@ void setup() {
     if (!beginWatchdog()) {
         logError(TAG, "watchdog initialization failed");
     }
+    // Recovery precedes every catalog/playlist read on every wake path, including button BLE.
+    if (!LittleFS.begin(false)) {
+        logError(TAG, "LittleFS mount failed (automatic formatting disabled)");
+        finishRun(RunResult::filesystem_mount_failed);
+        return;
+    }
+    notua::storage::ImageStorage bootStorage;
+    if (!bootStorage.begin() || !notua::storage::migrateLegacyImages(LittleFS)) {
+        logError(TAG, "image transaction recovery or legacy migration failed");
+        finishRun(RunResult::filesystem_mount_failed); return;
+    }
+    logInfo(TAG, "LittleFS mounted and recovered: total=%u used=%u",
+        static_cast<unsigned>(LittleFS.totalBytes()), static_cast<unsigned>(LittleFS.usedBytes()));
     if (gWakePath == WakePath::buttonBle) {
         const bool initialized = beginBlePeripheral();
         logInfo(TAG, "button BLE path: initialization=%s state=%s",
@@ -245,21 +257,32 @@ void setup() {
         static_cast<unsigned>(heap_caps_get_total_size(MALLOC_CAP_SPIRAM)),
         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
         static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
-    if (!LittleFS.begin(false)) {
-        logError(TAG, "LittleFS mount failed (automatic formatting disabled)");
-        finishRun(RunResult::filesystem_mount_failed);
-        return;
+    notua::storage::CatalogEntry catalog[notua::storage::MAX_IMAGES];
+    if (!notua::storage::scanFixedCatalog(LittleFS, catalog)) {
+        logError(TAG, "fixed-slot catalog scan failed");
+        finishRun(RunResult::filesystem_mount_failed); return;
     }
-    logInfo(TAG, "LittleFS mounted: total=%u used=%u", static_cast<unsigned>(LittleFS.totalBytes()),
-        static_cast<unsigned>(LittleFS.usedBytes()));
-
-    const std::vector<String> images = findValidImages();
-    if (images.empty()) {
+    notua::storage::PlaylistStore playlistStore;
+    if (!playlistStore.begin()) {
+        finishRun(RunResult::preferences_open_failed); return;
+    }
+    if (playlistStore.syncInProgress()) {
+        logWarn(TAG, "image sync incomplete; retaining current EPD contents until button BLE resume");
+        playlistStore.end(); finishRun(RunResult::sync_in_progress); return;
+    }
+    notua::storage::Playlist playlist{};
+    if (!playlistStore.loadActive(catalog, playlist)) {
         logError(TAG, "no valid %ux%u Y8 BIN images found", static_cast<unsigned>(IMAGE_WIDTH),
             static_cast<unsigned>(IMAGE_HEIGHT));
+        playlistStore.end();
         finishRun(RunResult::no_valid_images);
         return;
     }
+    gConfiguredSleepUs = static_cast<uint64_t>(playlist.intervalSeconds) * 1000000ULL;
+    std::vector<String> images;
+    for (uint8_t i = 0; i < playlist.count; ++i)
+        images.push_back(String("/images/slot_") + playlist.slots[i] + ".bin");
+    playlistStore.end();
 
     Preferences preferences;
     if (!preferences.begin("photo-cycle", false)) {

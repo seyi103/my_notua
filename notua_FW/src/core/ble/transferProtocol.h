@@ -10,9 +10,13 @@ constexpr size_t IMAGE_BYTES = 1600U * 1200U;
 constexpr size_t MAX_GATT_VALUE_BYTES = 512;
 constexpr size_t STATUS_BYTES = 12;
 
-enum class Opcode : uint8_t { start = 0x01, finish = 0x02, abort = 0x03, apply = 0x04 };
+enum class Opcode : uint8_t {
+    start = 0x01, finish = 0x02, abort = 0x03, apply = 0x04,
+    syncBegin = 0x10, playlistCommit = 0x11, getCatalog = 0x12,
+};
 enum class Status : uint8_t {
     startAccepted = 0x01, ack = 0x02, committed = 0x03, applying = 0x04,
+    playlistCommitted = 0x05, syncAccepted = 0x06,
     badCommand = 0x80, badSize = 0x81, badOffset = 0x82, queueFull = 0x83,
     crcMismatch = 0x84, storageError = 0x85, notReady = 0x86,
 };
