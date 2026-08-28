@@ -295,7 +295,19 @@ void setup() {
         finishRun(RunResult::preferences_open_failed);
         return;
     }
-    const size_t index = preferences.getUInt("next", 0) % images.size();
+    const String pending = preferences.getString("pending", "");
+    size_t index = preferences.getUInt("next", 0) % images.size();
+    bool displayingPending = false;
+    if (pending.length()) {
+        const auto found = std::find(images.begin(), images.end(), pending);
+        if (found != images.end()) {
+            index = static_cast<size_t>(found - images.begin());
+            displayingPending = true;
+            logInfo(TAG, "pending image takes priority: %s", pending.c_str());
+        } else {
+            logError(TAG, "pending image is unavailable or invalid; retaining pending value");
+        }
+    }
     logInfo(TAG, "loading image %u/%u: %s", static_cast<unsigned>(index + 1),
         static_cast<unsigned>(images.size()), images[index].c_str());
 
@@ -324,6 +336,12 @@ void setup() {
         finishRun(RunResult::index_persist_failed);
         return;
     }
+    if (displayingPending && !preferences.remove("pending")) {
+        logError(TAG, "display succeeded but pending image marker was not cleared");
+        preferences.end();
+        finishRun(RunResult::index_persist_failed);
+        return;
+    }
     logInfo(TAG, "display complete; next image index=%u", static_cast<unsigned>(next));
     preferences.end();
     finishRun(RunResult::success);
@@ -333,6 +351,14 @@ void loop() {
     if (gWakePath == WakePath::buttonBle) {
         feedWatchdog();
         pollBlePeripheral();
+        if (consumeBleApplyRequest()) {
+            logInfo(TAG, "APPLY accepted; allowing notification delivery before restart");
+            delay(350);
+            stopBlePeripheral();
+            Serial.flush();
+            delay(50);
+            ESP.restart();
+        }
         const BleState currentBleState = bleState();
         if (currentBleState == BleState::initializationFailed && !gTerminal) {
             stopBlePeripheral();

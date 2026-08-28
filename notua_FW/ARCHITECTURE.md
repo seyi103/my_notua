@@ -27,7 +27,7 @@ includes use the single PlatformIO `src` include root. For example, driver code 
 | Long operations | Keep watchdog feeding and scheduler yielding in blocking EPD paths |
 | PSRAM | Keep OPI PSRAM build configuration and verify PSRAM availability at startup |
 | WiFi / MQTT / HTTP / OTA | Removed from includes, libraries, initialization, and OTA partitioning |
-| BLE | Button-wake-only NimBLE peripheral with one read-only status characteristic |
+| BLE | Button-wake NimBLE peripheral with Ready plus queued Y8 transfer characteristics |
 | Flutter | Future client boundary; no app implementation is part of this firmware change |
 
 On power-on/reset, an unrecognized EXT1 source, or any other non-timer/non-GPIO16 wake, the boot
@@ -71,7 +71,83 @@ per second so native USB diagnostics remain observable.
 NimBLE-Arduino 1.4.3 is pinned rather than the legacy Bluedroid Arduino BLE library because NimBLE
 has a substantially smaller RAM footprint on ESP32-S3. This preserves internal heap for control and
 the planned chunked transfer protocol while the existing 1,920,000-byte frame remains in PSRAM.
-This PR intentionally defines no image-transfer characteristic or Flutter behavior.
+No Flutter or image conversion behavior is included. The transport accepts only an already generated,
+exactly 1,920,000-byte Y8 file.
+
+## BLE image-transfer protocol (version 1)
+
+The primary service remains `7d2a4b70-8e67-4d8b-9f3a-36c89e210001`. Ready remains read-only at
+`...0002` and continues to return UTF-8 `ready`. Control (`...0003`) is Write With Response, Data
+(`...0004`) is Write Without Response, and Transfer Status (`...0005`) is Read + Notify. The full
+UUID prefix is `7d2a4b70-8e67-4d8b-9f3a-36c89e21`; the suffix notation is only shorthand here.
+
+All integers are explicitly encoded little-endian; no packed C structure defines the wire format.
+
+| Packet | Exact byte layout |
+| --- | --- |
+| START (12 bytes) | `u8 version=1, u8 opcode=0x01, u8 slot, u8 reserved=0, u32 size, u32 crc32` |
+| FINISH | `u8 version=1, u8 opcode=0x02` |
+| ABORT | `u8 version=1, u8 opcode=0x03` |
+| APPLY | `u8 version=1, u8 opcode=0x04` |
+| DATA | `u32 offset, u8 payload[]`; total characteristic value is 5..512 bytes |
+| STATUS (12 bytes) | `u8 version=1, u8 code, u16 reserved=0, u32 next_expected_offset, u32 detail` |
+
+Status codes are fixed as follows: `0x01 START_ACCEPTED`, `0x02 ACK`, `0x03 COMMITTED`,
+`0x04 APPLYING`, `0x80 BAD_COMMAND`, `0x81 BAD_SIZE`, `0x82 BAD_OFFSET`, `0x83 QUEUE_FULL`,
+`0x84 CRC_MISMATCH`, `0x85 STORAGE_ERROR`, and `0x86 NOT_READY`. `detail` is zero normally;
+BAD_SIZE reports the supplied/observed byte count, BAD_OFFSET reports the received offset,
+CRC_MISMATCH reports the calculated CRC, and command errors may report received length or slot.
+`next_expected_offset` always identifies the durable, streaming-file offset from which the sender
+can retry.
+
+START validates version, reserved byte, slot policy, exact size, and opens
+`/images/notua_upload.tmp`. DATA callbacks only bounds-check and copy at most 512 bytes into an
+eight-entry FreeRTOS queue. `pollBlePeripheral()` performs LittleFS writes and streaming CRC32/IEEE
+(the same result as Python `zlib.crc32`). Duplicate offsets are ACKed without another write; future
+offsets receive BAD_OFFSET. A full queue returns QUEUE_FULL. The reference sender transmits at most
+eight packets and waits until ACK reaches the window end, retrying from the supplied expected offset.
+FINISH is processed in queue order and succeeds only after all earlier DATA has been written, the
+size is 1,920,000, and CRC matches.
+
+On commit, an existing target is renamed to `/images/notua_replace.bak`, the temporary file is
+renamed into place, and failure rolls the backup back. A marker records the backup target so boot-time
+recovery restores it if replacement was interrupted; stale temporary files are removed. Unknown
+image files are never deleted. Sorted valid images define slots 0..2: an existing index replaces that
+path, the next contiguous index creates `/images/notua_slot_N.bin`, and gaps or more than three valid
+images are rejected. LittleFS is always mounted with formatting disabled.
+
+COMMITTED is notified only after the final path is stored as NVS `pending`. APPLY causes APPLYING to
+be notified; the main loop then waits for notification delivery, shuts BLE down, and restarts. Boot
+prioritizes the pending path through the established EPD path. Only a successful display clears
+pending and advances the normal sorted-image cycle index. Disconnect and ABORT close and remove an
+unfinished temp file; reconnect requires a new START. CRC, size, offset, queue, or storage failures
+never replace an existing frame or alter the cycle index.
+
+## Python test sender
+
+Install Python 3.10+ and Bleak with `python -m pip install bleak`. On Windows, use a machine with
+Bluetooth LE enabled and run in PowerShell; on macOS, grant the terminal Bluetooth permission in
+System Settings. From `notua_FW`, run:
+
+```sh
+python scripts/ble_send_test.py --file data/images/test_01.bin --slot 0
+```
+
+The sender scans by `Notua` or the service UUID, computes size and `zlib.crc32` before connecting,
+uses the discovered Data characteristic's `max_write_without_response_size` minus the four-byte
+offset (also capped to the firmware's 512-byte GATT value limit), subscribes before START, and prints
+progress, rate, retry count, and final CRC. A disconnect is fatal and explicitly instructs the user
+to reconnect and restart from START.
+
+## Transfer board verification (not CI)
+
+CI/host checks cover packet constants and endian helpers, CRC reference behavior, offset branches,
+slot/size guards, bounded queues, rollback calls, the Python CLI, and both firmware builds. Hardware
+acceptance still must separately transfer a real generated frame, induce wrong CRC and future offset,
+disconnect mid-transfer, fill the queue, replace each slot, and cut power at both rename boundaries.
+For every fault confirm the former image and NVS cycle index remain valid. Finally send a correct
+frame, observe COMMITTED before APPLYING/disconnect, verify restart displays it, and allow three timer
+wakes to confirm sorted rotation continues.
 
 Before every release-build sleep, the firmware enables the five-minute timer and EXT1 wake. If the
 button is still HIGH, it waits at most 10 seconds for LOW while feeding the watchdog. On timeout it
