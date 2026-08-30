@@ -203,7 +203,9 @@ once, recovers its persisted offset, and retransmits from that offset.
 
 `NimBLEDevice::setMTU(517)` configures only the firmware's local preferred MTU; it does not prove the
 peer-negotiated ATT MTU or Bleak's usable write-without-response size. The server therefore logs every
-`onMTUChange` peer MTU event, and Transfer Status logs its CCCD subscription value. Production-board
+`onMTUChange` peer MTU event, and Transfer Status logs its CCCD subscription value. Both callbacks
+only enqueue their compact diagnostic payloads; `pollBlePeripheral()` performs the actual logging.
+Production-board
 throughput is **not yet hardware-verified**: acceptance requires those logs plus the sender diagnostics
 to show the negotiated sizes and working notifications during a complete 1,920,000-byte transfer.
 

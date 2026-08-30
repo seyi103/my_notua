@@ -26,9 +26,17 @@ constexpr uint32_t CONNECTED_INACTIVITY_MS = 120UL * 1000UL;
 constexpr UBaseType_t EVENT_QUEUE_LENGTH = 8;
 constexpr UBaseType_t TRANSFER_QUEUE_LENGTH = 8;
 
-enum class BleEventType : uint8_t { connected, disconnected, gattActivity };
+enum class BleEventType : uint8_t {
+    connected,
+    disconnected,
+    gattActivity,
+    mtuChanged,
+    statusSubscriptionChanged,
+};
 struct BleEvent {
     BleEventType type;
+    uint16_t value;
+    uint16_t connectionHandle;
 };
 
 BleState gState = BleState::idle;
@@ -97,8 +105,8 @@ void enqueueFeedback(notua::transfer::Status status, uint32_t detail = 0) {
     if (gFeedbackQueue) xQueueSend(gFeedbackQueue, &event, 0);
 }
 
-bool enqueueEvent(BleEventType type) {
-    const BleEvent event{type};
+bool enqueueEvent(BleEventType type, uint16_t value = 0, uint16_t connectionHandle = 0) {
+    const BleEvent event{type, value, connectionHandle};
     if (type == BleEventType::gattActivity) {
         return gActivityQueue && xQueueOverwrite(gActivityQueue, &event) == pdTRUE;
     }
@@ -115,8 +123,7 @@ class ServerCallbacks final : public NimBLEServerCallbacks {
     }
 
     void onMTUChange(uint16_t mtu, NimBLEConnInfo& connection) override {
-        logInfo(TAG, "peer MTU changed: mtu=%u handle=%u",
-            static_cast<unsigned>(mtu), static_cast<unsigned>(connection.getConnHandle()));
+        enqueueEvent(BleEventType::mtuChanged, mtu, connection.getConnHandle());
     }
 };
 
@@ -126,9 +133,7 @@ class StatusCallbacks final : public NimBLECharacteristicCallbacks {
     }
 
     void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo& connection, uint16_t value) override {
-        logInfo(TAG, "Transfer Status subscription: value=%u handle=%u notifications=%s indications=%s",
-            static_cast<unsigned>(value), static_cast<unsigned>(connection.getConnHandle()),
-            (value & 1) ? "enabled" : "disabled", (value & 2) ? "enabled" : "disabled");
+        enqueueEvent(BleEventType::statusSubscriptionChanged, value, connection.getConnHandle());
         enqueueEvent(BleEventType::gattActivity);
     }
 };
@@ -312,6 +317,18 @@ void pollBlePeripheral() {
             }
             break;
         case BleEventType::gattActivity: break; // Activity uses its dedicated coalescing queue.
+        case BleEventType::mtuChanged:
+            logInfo(TAG, "peer MTU changed: mtu=%u handle=%u",
+                static_cast<unsigned>(event.value),
+                static_cast<unsigned>(event.connectionHandle));
+            break;
+        case BleEventType::statusSubscriptionChanged:
+            logInfo(TAG, "Transfer Status subscription: value=%u handle=%u notifications=%s indications=%s",
+                static_cast<unsigned>(event.value),
+                static_cast<unsigned>(event.connectionHandle),
+                (event.value & 1) ? "enabled" : "disabled",
+                (event.value & 2) ? "enabled" : "disabled");
+            break;
         case BleEventType::disconnected: {
             gStorage.abort(); gCommitted = false;
             if (gTransferQueue) xQueueReset(gTransferQueue);

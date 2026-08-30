@@ -18,16 +18,19 @@ class BleRuntimeContractTest(unittest.TestCase):
         self.assertIn("CONNECTED_INACTIVITY_MS = 120UL * 1000UL", BLE_SOURCE)
 
     def test_callbacks_do_not_perform_transfer_or_storage_work(self) -> None:
-        callbacks = re.search(
-            r"class ServerCallbacks.*?\n};\n\nclass StatusCallbacks.*?\n};",
+        callbacks = re.findall(
+            r"class (?:Server|Status|Control|Data)Callbacks.*?\n};",
             BLE_SOURCE,
             re.DOTALL,
         )
-        self.assertIsNotNone(callbacks)
-        callback_source = callbacks.group(0)
+        self.assertEqual(len(callbacks), 4)
+        callback_source = "\n".join(callbacks)
         self.assertIn("enqueueEvent", callback_source)
-        self.assertIn("peer MTU changed", callback_source)
-        self.assertIn("Transfer Status subscription", callback_source)
+        self.assertNotIn("logInfo", callback_source)
+        self.assertNotIn("logWarn", callback_source)
+        self.assertNotIn("logError", callback_source)
+        self.assertNotIn("peer MTU changed", callback_source)
+        self.assertNotIn("Transfer Status subscription", callback_source)
         self.assertNotIn("startAdvertising", callback_source)
         self.assertNotIn("gState =", callback_source)
         self.assertNotIn("gStorage", callback_source)
@@ -53,6 +56,8 @@ class BleRuntimeContractTest(unittest.TestCase):
         self.assertIn("void onMTUChange(uint16_t mtu, NimBLEConnInfo& connection) override", BLE_SOURCE)
         self.assertIn("void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo& connection, uint16_t value) override", BLE_SOURCE)
         self.assertIn("Transfer Status subscription", BLE_SOURCE)
+        self.assertIn("BleEventType::mtuChanged", BLE_SOURCE)
+        self.assertIn("BleEventType::statusSubscriptionChanged", BLE_SOURCE)
 
     def test_nimble_251_start_advertising_mtu_and_notify_contract(self) -> None:
         self.assertIn("const bool mtuConfigured = NimBLEDevice::setMTU", BLE_SOURCE)
