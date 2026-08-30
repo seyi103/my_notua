@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 BLE_SOURCE = (ROOT / "src/core/ble/blePeripheral.cpp").read_text(encoding="utf-8")
 BLE_HEADER = (ROOT / "src/core/ble/blePeripheral.h").read_text(encoding="utf-8")
+PLATFORMIO = (ROOT / "platformio.ini").read_text(encoding="utf-8")
 
 
 class BleRuntimeContractTest(unittest.TestCase):
@@ -37,6 +38,24 @@ class BleRuntimeContractTest(unittest.TestCase):
         self.assertNotIn("volatile BleState", BLE_SOURCE)
         self.assertIn("xQueueSend", BLE_SOURCE)
         self.assertIn("xQueueReceive", BLE_SOURCE)
+
+    def test_nimble_251_callback_contract_and_static_ownership(self) -> None:
+        self.assertIn("h2zero/NimBLE-Arduino@2.5.1", PLATFORMIO)
+        self.assertNotIn("NimBLE-Arduino@^", PLATFORMIO)
+        self.assertIn("void onConnect(NimBLEServer*, NimBLEConnInfo&) override", BLE_SOURCE)
+        self.assertIn("void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override", BLE_SOURCE)
+        self.assertIn("void onRead(NimBLECharacteristic*, NimBLEConnInfo&) override", BLE_SOURCE)
+        self.assertIn("NimBLECharacteristic* characteristic, NimBLEConnInfo&", BLE_SOURCE)
+        self.assertIn("gServer->setCallbacks(&gServerCallbacks, false)", BLE_SOURCE)
+
+    def test_nimble_251_start_advertising_mtu_and_notify_contract(self) -> None:
+        self.assertIn("const bool mtuConfigured = NimBLEDevice::setMTU", BLE_SOURCE)
+        self.assertIn("NimBLEDevice::setPower(3)", BLE_SOURCE)
+        self.assertIn("if (!gServer->start())", BLE_SOURCE)
+        self.assertIn("advertising->enableScanResponse(true)", BLE_SOURCE)
+        self.assertIn("advertising->setName(DEVICE_NAME)", BLE_SOURCE)
+        self.assertIn("const bool notified = gTransferStatus->notify()", BLE_SOURCE)
+        self.assertIn("status notification failed", BLE_SOURCE)
 
 
 if __name__ == "__main__":

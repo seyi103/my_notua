@@ -69,7 +69,7 @@ release sleeps on the one-minute error-retry policy rather than treating it as a
 Development builds never sleep on these terminal paths and print the final `BleState` and uptime once
 per second so native USB diagnostics remain observable.
 
-NimBLE-Arduino 1.4.3 is pinned rather than the legacy Bluedroid Arduino BLE library because NimBLE
+NimBLE-Arduino 2.5.1 is pinned exactly rather than the legacy Bluedroid Arduino BLE library because NimBLE
 has a substantially smaller RAM footprint on ESP32-S3. This preserves internal heap for control and
 the planned chunked transfer protocol while the existing 1,920,000-byte frame remains in PSRAM.
 No Flutter or image conversion behavior is included. The transport accepts only an already generated,
@@ -191,9 +191,9 @@ does not resend finished slots. It
 uses the discovered Data characteristic's `max_write_without_response_size` minus the four-byte
 offset (also capped to the firmware's 512-byte GATT value limit), subscribes before START, and prints
 progress, rate, retry count, and final CRC. A disconnect is fatal and explicitly instructs the user
-to reconnect and restart from START. Because NimBLE 1.4.3 has a void `notify()` API, firmware returns
-whether it could synchronously issue notify while connected and logs failures; the characteristic's
-read value is updated first in every case. On a notification timeout the sender reads Transfer Status
+to reconnect and restart from START. NimBLE-Arduino 2.5.1 returns the real result of `notify()`;
+firmware propagates it and logs false results, while the characteristic's read value is updated first
+in every case. On a notification timeout the sender reads Transfer Status
 once, recovers its persisted offset, and retransmits from that offset.
 
 ## Transfer board verification (not CI)

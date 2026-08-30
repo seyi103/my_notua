@@ -77,10 +77,12 @@ bool publishStatus(notua::transfer::Status status, uint32_t offset, uint32_t det
             static_cast<unsigned>(status));
         return false;
     }
-    // NimBLE-Arduino 1.4.3 exposes notify() as void. Reaching this call while connected is the
-    // strongest synchronous success result available; timeout recovery reads the retained value.
-    gTransferStatus->notify();
-    return true;
+    const bool notified = gTransferStatus->notify();
+    if (!notified) {
+        logError(TAG, "status notification failed: code=%u offset=%lu",
+            static_cast<unsigned>(status), static_cast<unsigned long>(offset));
+    }
+    return notified;
 }
 
 bool enqueueTransfer(TransferEventType type, const std::string& value) {
@@ -104,23 +106,23 @@ bool enqueueEvent(BleEventType type) {
 }
 
 class ServerCallbacks final : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer*, ble_gap_conn_desc*) override {
+    void onConnect(NimBLEServer*, NimBLEConnInfo&) override {
         enqueueEvent(BleEventType::connected);
     }
 
-    void onDisconnect(NimBLEServer*, ble_gap_conn_desc*) override {
+    void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
         enqueueEvent(BleEventType::disconnected);
     }
 };
 
 class StatusCallbacks final : public NimBLECharacteristicCallbacks {
-    void onRead(NimBLECharacteristic*) override {
+    void onRead(NimBLECharacteristic*, NimBLEConnInfo&) override {
         enqueueEvent(BleEventType::gattActivity);
     }
 };
 
 class ControlCallbacks final : public NimBLECharacteristicCallbacks {
-    void onWrite(NimBLECharacteristic* characteristic) override {
+    void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
         noteBleGattActivity();
         if (!enqueueTransfer(TransferEventType::control, characteristic->getValue()))
             enqueueFeedback(notua::transfer::Status::queueFull);
@@ -128,7 +130,7 @@ class ControlCallbacks final : public NimBLECharacteristicCallbacks {
 };
 
 class DataCallbacks final : public NimBLECharacteristicCallbacks {
-    void onWrite(NimBLECharacteristic* characteristic) override {
+    void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
         noteBleGattActivity();
         const std::string value = characteristic->getValue();
         if (value.size() > notua::transfer::MAX_GATT_VALUE_BYTES)
@@ -146,8 +148,10 @@ DataCallbacks gDataCallbacks;
 void cleanupAfterInitializationFailure(const char* step) {
     logError(TAG, "initialization failed: step=%s", step);
     if (gDeviceInitialized) {
-        NimBLEDevice::stopAdvertising();
-        NimBLEDevice::deinit(true);
+        if (!NimBLEDevice::stopAdvertising())
+            logWarn(TAG, "initialization cleanup: advertising stop returned false");
+        if (!NimBLEDevice::deinit(true))
+            logWarn(TAG, "initialization cleanup: NimBLE deinit returned false");
     }
     gDeviceInitialized = false;
     gServer = nullptr;
@@ -191,19 +195,29 @@ bool beginBlePeripheral() {
         return false;
     }
 
-    NimBLEDevice::init(DEVICE_NAME);
+    if (!NimBLEDevice::init(DEVICE_NAME)) {
+        cleanupAfterInitializationFailure("device_init");
+        return false;
+    }
     gDeviceInitialized = true;
     constexpr uint16_t PREFERRED_MTU = 517;
-    const int mtuResult = NimBLEDevice::setMTU(PREFERRED_MTU);
-    logInfo(TAG, "preferred MTU: requested=%u result=%d success=%s",
-        static_cast<unsigned>(PREFERRED_MTU), mtuResult, mtuResult == 0 ? "true" : "false");
-    NimBLEDevice::setPower(ESP_PWR_LVL_P3);
+    const bool mtuConfigured = NimBLEDevice::setMTU(PREFERRED_MTU);
+    logInfo(TAG, "preferred MTU: requested=%u success=%s",
+        static_cast<unsigned>(PREFERRED_MTU), mtuConfigured ? "true" : "false");
+    if (!mtuConfigured) {
+        cleanupAfterInitializationFailure("preferred_mtu");
+        return false;
+    }
+    if (!NimBLEDevice::setPower(3)) {
+        cleanupAfterInitializationFailure("tx_power");
+        return false;
+    }
     gServer = NimBLEDevice::createServer();
     if (!gServer) {
         cleanupAfterInitializationFailure("server");
         return false;
     }
-    gServer->setCallbacks(&gServerCallbacks);
+    gServer->setCallbacks(&gServerCallbacks, false);
     gServer->advertiseOnDisconnect(false);
     NimBLEService* service = gServer->createService(SERVICE_UUID);
     if (!service) {
@@ -237,15 +251,21 @@ bool beginBlePeripheral() {
         gCommitted = !pendingPreferences.getBool("sync", false) && gPendingDurable;
         pendingPreferences.end();
     }
-    service->start();
+    if (!gServer->start()) {
+        cleanupAfterInitializationFailure("server_start");
+        return false;
+    }
 
     NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
     if (!advertising) {
         cleanupAfterInitializationFailure("advertising");
         return false;
     }
-    advertising->addServiceUUID(SERVICE_UUID);
-    advertising->setScanResponse(true);
+    if (!advertising->addServiceUUID(SERVICE_UUID) || !advertising->setName(DEVICE_NAME)) {
+        cleanupAfterInitializationFailure("advertising_data");
+        return false;
+    }
+    advertising->enableScanResponse(true);
     const bool started = advertising->start();
     if (!started) {
         cleanupAfterInitializationFailure("advertising_start");
@@ -284,7 +304,7 @@ void pollBlePeripheral() {
             gStorage.abort(); gCommitted = false;
             if (gTransferQueue) xQueueReset(gTransferQueue);
             if (gFeedbackQueue) xQueueReset(gFeedbackQueue);
-            const bool started = NimBLEDevice::startAdvertising();
+            const bool started = gServer && gServer->startAdvertising();
             gStateStartedMs = now;
             if (started) {
                 gState = BleState::reconnectAdvertising;
@@ -433,12 +453,15 @@ void stopBlePeripheral() {
         ? BleState::initializationFailed : BleState::stopped;
     if (gServer) {
         for (const uint16_t connection : gServer->getPeerDevices()) {
-            gServer->disconnect(connection);
+            if (!gServer->disconnect(connection))
+                logWarn(TAG, "disconnect request failed: handle=%u", connection);
         }
     }
     if (gDeviceInitialized) {
-        NimBLEDevice::stopAdvertising();
-        NimBLEDevice::deinit(true);
+        if (!NimBLEDevice::stopAdvertising())
+            logWarn(TAG, "advertising stop returned false during BLE shutdown");
+        if (!NimBLEDevice::deinit(true))
+            logWarn(TAG, "NimBLE deinit returned false during BLE shutdown");
     }
     gDeviceInitialized = false;
     gServer = nullptr;
