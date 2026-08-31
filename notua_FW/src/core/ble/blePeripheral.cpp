@@ -23,6 +23,7 @@ constexpr const char* CATALOG_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210006";
 constexpr uint32_t INITIAL_ADVERTISING_MS = 60UL * 1000UL;
 constexpr uint32_t RECONNECT_ADVERTISING_MS = 30UL * 1000UL;
 constexpr uint32_t CONNECTED_INACTIVITY_MS = 120UL * 1000UL;
+constexpr uint32_t TRANSFER_DIAGNOSTIC_INTERVAL_MS = 5UL * 1000UL;
 constexpr UBaseType_t EVENT_QUEUE_LENGTH = 8;
 constexpr UBaseType_t TRANSFER_QUEUE_LENGTH = 8;
 
@@ -52,6 +53,11 @@ notua::storage::PlaylistStore gPlaylistStore;
 bool gCommitted = false;
 bool gPendingDurable = false;
 bool gApplyRequested = false;
+uint32_t gAckNotifySuccessCount = 0;
+uint32_t gAckNotifyFailureCount = 0;
+uint32_t gTransferQueueFullCount = 0;
+uint32_t gReceivedPacketCount = 0;
+uint32_t gLastTransferDiagnosticMs = 0;
 
 bool refreshCatalogValue() {
     using namespace notua::storage;
@@ -83,10 +89,14 @@ bool publishStatus(notua::transfer::Status status, uint32_t offset, uint32_t det
     if (gState != BleState::connected) {
         logWarn(TAG, "status value updated without notification: code=%u not connected",
             static_cast<unsigned>(status));
+        if (status == notua::transfer::Status::ack) ++gAckNotifyFailureCount;
         return false;
     }
     const bool notified = gTransferStatus->notify();
-    if (!notified) {
+    if (status == notua::transfer::Status::ack) {
+        if (notified) ++gAckNotifySuccessCount;
+        else ++gAckNotifyFailureCount;
+    } else if (!notified) {
         logError(TAG, "status notification failed: code=%u offset=%lu",
             static_cast<unsigned>(status), static_cast<unsigned long>(offset));
     }
@@ -257,6 +267,7 @@ bool beginBlePeripheral() {
         cleanupAfterInitializationFailure("transfer_characteristics"); return false;
     }
     control->setCallbacks(&gControlCallbacks); data->setCallbacks(&gDataCallbacks);
+    gTransferStatus->setCallbacks(&gStatusCallbacks);
     uint8_t initial[notua::transfer::STATUS_BYTES];
     notua::transfer::encodeStatus(initial, notua::transfer::Status::notReady, 0, 0);
     gTransferStatus->setValue(initial, sizeof(initial));
@@ -290,6 +301,7 @@ bool beginBlePeripheral() {
     }
     gState = BleState::advertising;
     gStateStartedMs = millis();
+    gLastTransferDiagnosticMs = gStateStartedMs;
     logInfo(TAG, "init=success service_uuid=%s advertising_started=true", SERVICE_UUID);
     return true;
 }
@@ -353,6 +365,7 @@ void pollBlePeripheral() {
     while (gTransferQueue && xQueueReceive(gTransferQueue, &transfer, 0) == pdTRUE) {
         using namespace notua::transfer;
         if (transfer.type == TransferEventType::data) {
+            ++gReceivedPacketCount;
             if (transfer.length < 5) {
                 publishStatus(Status::badCommand, gStorage.offset(), transfer.length);
                 transferError = true; continue;
@@ -447,12 +460,27 @@ void pollBlePeripheral() {
     if (!transferError && acknowledgements.flush(true))
         publishStatus(notua::transfer::Status::ack, gStorage.offset());
     FeedbackEvent feedback{};
-    while (gFeedbackQueue && xQueueReceive(gFeedbackQueue, &feedback, 0) == pdTRUE)
+    while (gFeedbackQueue && xQueueReceive(gFeedbackQueue, &feedback, 0) == pdTRUE) {
+        if (feedback.status == notua::transfer::Status::queueFull) ++gTransferQueueFullCount;
         publishStatus(feedback.status, gStorage.offset(), feedback.detail);
+    }
     if (gActivityQueue && xQueueReceive(gActivityQueue, &event, 0) == pdTRUE
         && gState == BleState::connected) {
         gStateStartedMs = millis();
         logDebug(TAG, "GATT activity; connected inactivity timeout refreshed");
+    }
+    const uint32_t now = millis();
+    if (gState == BleState::connected
+        && now - gLastTransferDiagnosticMs >= TRANSFER_DIAGNOSTIC_INTERVAL_MS
+        && (gReceivedPacketCount || gAckNotifySuccessCount || gAckNotifyFailureCount || gTransferQueueFullCount)) {
+        gLastTransferDiagnosticMs = now;
+        logInfo(TAG,
+            "transfer diag: packets=%lu persisted_offset=%lu ack_notify_ok=%lu ack_notify_fail=%lu queue_full=%lu",
+            static_cast<unsigned long>(gReceivedPacketCount),
+            static_cast<unsigned long>(gStorage.offset()),
+            static_cast<unsigned long>(gAckNotifySuccessCount),
+            static_cast<unsigned long>(gAckNotifyFailureCount),
+            static_cast<unsigned long>(gTransferQueueFullCount));
     }
 }
 
