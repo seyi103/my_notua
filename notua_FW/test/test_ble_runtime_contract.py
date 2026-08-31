@@ -36,6 +36,27 @@ class BleRuntimeContractTest(unittest.TestCase):
         self.assertNotIn("gStorage", callback_source)
         self.assertNotIn("gPlaylistStore", callback_source)
 
+    def test_transfer_status_callback_is_registered(self) -> None:
+        self.assertIn("gTransferStatus->setCallbacks(&gStatusCallbacks);", BLE_SOURCE)
+        self.assertIn("gCatalogCharacteristic->setCallbacks(&gStatusCallbacks);", BLE_SOURCE)
+
+    def test_subscription_callback_only_enqueues(self) -> None:
+        match = re.search(
+            r"void onSubscribe\(NimBLECharacteristic\*, NimBLEConnInfo& connection, uint16_t value\) override \{(.*?)\n    \}",
+            BLE_SOURCE,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        body = match.group(1)
+        self.assertIn("enqueueEvent", body)
+        self.assertNotIn("log", body)
+        self.assertNotIn("publishStatus", body)
+
+    def test_transfer_diagnostics_are_rate_limited_outside_callbacks(self) -> None:
+        self.assertIn("TRANSFER_DIAGNOSTIC_INTERVAL_MS = 5UL * 1000UL", BLE_SOURCE)
+        self.assertIn("transfer diag: packets=%lu persisted_offset=%lu", BLE_SOURCE)
+        self.assertIn("ack_notify_ok=%lu ack_notify_fail=%lu queue_full=%lu", BLE_SOURCE)
+
     def test_future_gatt_activity_hook_is_public(self) -> None:
         self.assertIn("bool noteBleGattActivity();", BLE_HEADER)
         self.assertIn("BleEventType::gattActivity", BLE_SOURCE)
