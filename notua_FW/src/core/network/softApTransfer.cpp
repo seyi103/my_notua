@@ -23,6 +23,20 @@ uint32_t lastActivity = 0, started = 0, lastLogged = 0, expectedCrc = 0;
 size_t remaining = 0;
 String ssid;
 
+int unusedCandidate(String* activeJson = nullptr) {
+  notua::storage::CatalogEntry catalog[notua::storage::MAX_IMAGES];
+  notua::storage::Playlist active{}; notua::storage::PlaylistStore playlists;
+  if (!notua::storage::scanFixedCatalog(LittleFS, catalog) || !playlists.begin()
+      || !playlists.loadActiveValidated(catalog, active)) { playlists.end(); return -1; }
+  playlists.end(); bool used[notua::storage::MAX_IMAGES]{}; String json = "[";
+  for (uint8_t i = 0; i < active.count; ++i) {
+    used[active.slots[i]] = true; if (i) json += ','; json += active.slots[i];
+  }
+  json += ']'; if (activeJson) *activeJson = json;
+  for (uint8_t slot = 0; slot < notua::storage::MAX_IMAGES; ++slot) if (!used[slot]) return slot;
+  return -1;
+}
+
 void reply(int code, const String& json) {
   if (!client) return;
   client.printf("HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %u\r\nConnection: close\r\n\r\n",
@@ -77,13 +91,9 @@ void acceptRequest() {
   if (slot < 0 || slot >= notua::storage::MAX_IMAGES) { fail(400, "slot"); return; }
   if (!haveLength || length != IMAGE_BYTES) { fail(411, "content-length"); return; }
   if (!haveCrc) { fail(400, "crc-header"); return; }
-  notua::storage::CatalogEntry catalog[notua::storage::MAX_IMAGES];
-  notua::storage::Playlist active{}; notua::storage::PlaylistStore playlists;
-  if (!notua::storage::scanFixedCatalog(LittleFS, catalog) || !playlists.begin()
-      || !playlists.loadActiveValidated(catalog, active)) { playlists.end(); fail(503, "playlist-read"); return; }
-  playlists.end();
-  for (uint8_t i = 0; i < active.count; ++i)
-    if (active.slots[i] == slot) { fail(409, "active-slot"); return; }
+  const int candidate = unusedCandidate();
+  if (candidate < 0) { fail(409, "all-slots-active"); return; }
+  if (slot != candidate) { fail(409, "active-or-stale-slot"); return; }
   if (!notua::storage::acquireTransferSession(notua::storage::TransferOwner::softAp)) { fail(409, "busy"); return; }
   if (storage.startSpike(length, expectedCrc) != notua::storage::StartResult::ok) { fail(507, "storage-start"); return; }
   remaining = length; uploading = true; started = lastActivity = millis(); lastLogged = 0;
@@ -98,9 +108,13 @@ String softApConnectionInfo() {
     const uint64_t id = ESP.getEfuseMac();
     char value[24]; snprintf(value, sizeof(value), "NOTUA-%06llX", id & 0xffffffULL); ssid = value;
   }
+  String activeSlots; const int candidate = unusedCandidate(&activeSlots);
   return String("{\"ssid\":\"") + ssid + "\",\"password\":\"" + PASSWORD
-      + "\",\"ip\":\"192.168.4.1\",\"port\":80,\"developmentOnly\":true}";
+      + "\",\"ip\":\"192.168.4.1\",\"port\":80,\"activeSlots\":" + activeSlots
+      + ",\"candidateSlot\":" + candidate + ",\"developmentOnly\":true}";
 }
+
+bool softApTransferOwnsLifecycle() { return requested || running; }
 
 void stopSoftApTransfer(const char* reason) {
   if (!running) return;
@@ -115,7 +129,7 @@ void pollSoftApTransfer() {
   if (requested && !running) {
     requested = false; softApConnectionInfo(); WiFi.mode(WIFI_AP);
     if (!WiFi.softAP(ssid.c_str(), PASSWORD)) { logError("SOFTAP", "start failed"); return; }
-    server.begin(); storage.begin(); running = true; lastActivity = millis();
+    server.begin(); running = true; lastActivity = millis();
     logInfo("SOFTAP", "started: ssid=%s ip=%s port=%u development_password=true", ssid.c_str(), WiFi.softAPIP().toString().c_str(), PORT);
   }
   if (!running) return;

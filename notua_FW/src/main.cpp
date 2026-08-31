@@ -403,7 +403,11 @@ void loop() {
         const BleState currentBleState = bleState();
         if (currentBleState == BleState::initializationFailed && !gTerminal) {
             stopBleForSleep(ERROR_RETRY_INTERVAL_US, "ble_runtime_error");
-        } else if (bleSessionExpired()) {
+        } else if (bleSessionExpired()
+#if NOTUA_SOFTAP_HTTP_SPIKE
+            && !softApTransferOwnsLifecycle()
+#endif
+        ) {
             logInfo(TAG, "BLE inactivity timeout: state=%s", bleStateName(currentBleState));
             stopBleForSleep(SLEEP_INTERVAL_US, "ble_timeout");
         }

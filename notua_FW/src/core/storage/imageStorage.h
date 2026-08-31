@@ -41,6 +41,7 @@ private:
     bool mounted_ = false;
     bool active_ = false;
     bool replacementPending_ = false;
+    bool spike_ = false;
     uint8_t slot_ = 0xff;
     notua::transfer::Crc32 crc_;
 };

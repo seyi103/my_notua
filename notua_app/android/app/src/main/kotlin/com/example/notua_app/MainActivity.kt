@@ -20,21 +20,27 @@ import java.net.HttpURLConnection
 import java.util.UUID
 import org.json.JSONObject
 import java.util.zip.CRC32
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : FlutterActivity() {
+    private class OnceResult(private val delegate: MethodChannel.Result) {
+        private val completed = AtomicBoolean(false)
+        fun success(value: Any?) { if (completed.compareAndSet(false, true)) delegate.success(value) }
+        fun error(code: String, message: String) { if (completed.compareAndSet(false, true)) delegate.error(code, message, null) }
+    }
     private val methods = "notua/softap"
     private val events = "notua/softap_progress"
     private val serviceUuid = UUID.fromString("7d2a4b70-8e67-4d8b-9f3a-36c89e210001")
     private val controlUuid = UUID.fromString("7d2a4b70-8e67-4d8b-9f3a-36c89e210003")
     private val infoUuid = UUID.fromString("7d2a4b70-8e67-4d8b-9f3a-36c89e210007")
     private var sink: EventChannel.EventSink? = null
-    private var pendingPicker: MethodChannel.Result? = null
+    private var pendingPicker: OnceResult? = null
     private var network: Network? = null
     private var callback: ConnectivityManager.NetworkCallback? = null
     private var activeGatt: BluetoothGatt? = null
     private var activeConnection: HttpURLConnection? = null
     private val handler = Handler(Looper.getMainLooper())
-    private var pendingConnect: MethodChannel.Result? = null
+    private var pendingConnect: OnceResult? = null
     private var scanCallback: ScanCallback? = null
 
     override fun configureFlutterEngine(engine: FlutterEngine) {
@@ -45,9 +51,9 @@ class MainActivity : FlutterActivity() {
         })
         MethodChannel(engine.dartExecutor.binaryMessenger, methods).setMethodCallHandler { call, result ->
             when (call.method) {
-                "selectFile" -> { pendingPicker = result; startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type="application/octet-stream"; addCategory(Intent.CATEGORY_OPENABLE) }, 44) }
-                "connect" -> connectBle(result)
-                "upload" -> upload(call.argument<String>("path")!!, call.argument<Int>("slot") ?: 0, result)
+                "selectFile" -> { pendingPicker = OnceResult(result); startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type="application/octet-stream"; addCategory(Intent.CATEGORY_OPENABLE) }, 44) }
+                "connect" -> connectBle(OnceResult(result))
+                "upload" -> upload(call.argument<String>("path")!!, OnceResult(result))
                 "cancel" -> { cleanupAll(); result.success(null) }
                 else -> result.notImplemented()
             }
@@ -58,19 +64,20 @@ class MainActivity : FlutterActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != 44) return
         val out = File(cacheDir, "notua-selected.bin")
-        if (resultCode != Activity.RESULT_OK || data?.data == null) pendingPicker?.error("cancelled", "No file selected", null)
+        if (resultCode != Activity.RESULT_OK || data?.data == null) pendingPicker?.error("cancelled", "No file selected")
         else try { contentResolver.openInputStream(data.data!!).use { input -> FileOutputStream(out).use { input!!.copyTo(it) } }; pendingPicker?.success(out.absolutePath) }
-        catch (e: Exception) { pendingPicker?.error("copy", e.message, null) }
+        catch (e: Exception) { pendingPicker?.error("copy", e.message ?: "File copy failed") }
         pendingPicker = null
     }
 
-    private fun connectBle(result: MethodChannel.Result) {
+    private fun connectBle(result: OnceResult) {
         val permissions = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 31) permissions += listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        if (Build.VERSION.SDK_INT in 29..32) permissions += Manifest.permission.ACCESS_FINE_LOCATION
         if (Build.VERSION.SDK_INT >= 33) permissions += Manifest.permission.NEARBY_WIFI_DEVICES
         if (permissions.any { ActivityCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) {
             ActivityCompat.requestPermissions(this, permissions.toTypedArray(), 91)
-            result.error("permissions", "Grant nearby device permissions, then tap Connect again", null); return
+            result.error("permissions", "Grant nearby device permissions, then tap Connect again"); return
         }
         pendingConnect = result
         val adapter = getSystemService(BluetoothManager::class.java).adapter
@@ -78,7 +85,7 @@ class MainActivity : FlutterActivity() {
         val scan = object: ScanCallback() {
             override fun onScanResult(type: Int, found: ScanResult) {
                 if (found.device.name != "Notua" || pendingConnect == null) return
-                scanner.stopScan(this); scanCallback = null; handler.removeCallbacksAndMessages("ble-scan")
+                stopScanSafely(this); scanCallback = null; handler.removeCallbacksAndMessages("ble-scan")
                 activeGatt = found.device.connectGatt(this@MainActivity, false, object: BluetoothGattCallback() {
                     override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, state: Int) {
                         if (status != BluetoothGatt.GATT_SUCCESS) failBle("GATT connection failed: $status")
@@ -110,15 +117,20 @@ class MainActivity : FlutterActivity() {
             }
             override fun onScanFailed(errorCode: Int) { failBle("BLE scan failed: $errorCode") }
         }
-        scanCallback = scan; scanner.startScan(scan)
-        handler.postAtTime({ if (pendingConnect != null) { scanner.stopScan(scan); scanCallback=null; failBle("BLE scan timed out") } }, "ble-scan", SystemClock.uptimeMillis()+15_000)
+        scanCallback = scan
+        try { scanner.startScan(scan) } catch (e: SecurityException) { scanCallback=null; failBle("BLE scan permission denied: ${e.message}"); return }
+        handler.postAtTime({ if (pendingConnect != null) { stopScanSafely(scan); scanCallback=null; failBle("BLE scan timed out") } }, "ble-scan", SystemClock.uptimeMillis()+15_000)
     }
 
     private fun handleInfoRead(gatt: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
         if (c.uuid != infoUuid || status != BluetoothGatt.GATT_SUCCESS) { failBle("Unable to read AP info"); return }
         try {
             val json=String(value, Charsets.UTF_8); val info=JSONObject(json)
-            getSharedPreferences("notua", MODE_PRIVATE).edit().putString("json",json).putString("ssid",info.getString("ssid")).putString("password",info.getString("password")).putString("ip",info.getString("ip")).putInt("port",info.getInt("port")).apply()
+            getSharedPreferences("notua", MODE_PRIVATE).edit().putString("json",json).putString("ssid",info.getString("ssid")).putString("password",info.getString("password")).putString("ip",info.getString("ip")).putInt("port",info.getInt("port")).putInt("candidateSlot",info.getInt("candidateSlot")).apply()
+            if (info.getInt("candidateSlot") < 0) {
+                val complete=pendingConnect; pendingConnect=null; gatt.disconnect(); gatt.close(); activeGatt=null
+                runOnUiThread { complete?.success(json) }; return
+            }
             val control=gatt.getService(serviceUuid).getCharacteristic(controlUuid); val command="START_AP".toByteArray()
             val started = if (Build.VERSION.SDK_INT >= 33) gatt.writeCharacteristic(control, command, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
                 else { @Suppress("DEPRECATION") control.value=command; @Suppress("DEPRECATION") gatt.writeCharacteristic(control) }
@@ -127,39 +139,52 @@ class MainActivity : FlutterActivity() {
         } catch(e:Exception) { failBle("Invalid AP info: ${e.message}") }
     }
 
+    private fun stopScanSafely(scan: ScanCallback) {
+        try { getSystemService(BluetoothManager::class.java).adapter.bluetoothLeScanner.stopScan(scan) }
+        catch (_: SecurityException) { }
+    }
+
     private fun failBle(message:String) {
         handler.removeCallbacksAndMessages("ble-scan"); handler.removeCallbacksAndMessages("gatt-write")
         activeGatt?.disconnect(); activeGatt?.close(); activeGatt=null
-        val result=pendingConnect; pendingConnect=null; runOnUiThread { result?.error("ble",message,null) }
+        val result=pendingConnect; pendingConnect=null; runOnUiThread { result?.error("ble",message) }
     }
 
-    private fun upload(path: String, slot: Int, result: MethodChannel.Result) = Thread {
+    private fun upload(path: String, result: OnceResult) = Thread {
         val file = File(path)
-        if (file.length() != 1_920_000L) { runOnUiThread { result.error("size", "File must be exactly 1,920,000 bytes", null) }; return@Thread }
+        if (file.length() != 1_920_000L) { runOnUiThread { result.error("size", "File must be exactly 1,920,000 bytes") }; return@Thread }
         val crc = CRC32(); FileInputStream(file).use { input -> val b=ByteArray(64*1024); while (true) { val n=input.read(b); if(n<0) break; crc.update(b,0,n) } }
         val cm = getSystemService(ConnectivityManager::class.java)
         val info = getSharedPreferences("notua", MODE_PRIVATE)
         val ssid=info.getString("ssid", null)
-        if (ssid == null) { runOnUiThread { result.error("connect", "Connect to Notua first", null) }; return@Thread }
+        val slot=info.getInt("candidateSlot", -1)
+        if (ssid == null || slot < 0) { runOnUiThread { result.error("connect", "Connect to Notua first") }; return@Thread }
         val spec=WifiNetworkSpecifier.Builder().setSsid(ssid).setWpa2Passphrase(info.getString("password", "")!!).build()
         val request=NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).setNetworkSpecifier(spec).build()
         callback=object: ConnectivityManager.NetworkCallback() {
             override fun onAvailable(n: Network) { handler.removeCallbacksAndMessages("wifi"); network=n; performUpload(n,file,slot,crc.value,result,cm,this) }
-            override fun onUnavailable() { cleanupNetwork(cm); runOnUiThread { result.error("wifi", "Notua network unavailable", null) } }
+            override fun onUnavailable() { cleanupNetwork(cm); runOnUiThread { result.error("wifi", "Notua network unavailable") } }
         }
-        runOnUiThread { cm.requestNetwork(request, callback!!); handler.postAtTime({ if(network==null){ cleanupNetwork(cm); result.error("wifi","Notua network request timed out",null) } }, "wifi", SystemClock.uptimeMillis()+20_000) }
+        runOnUiThread {
+            try {
+                cm.requestNetwork(request, callback!!)
+                handler.postAtTime({ if(network==null){ cleanupNetwork(cm); result.error("wifi","Notua network request timed out") } }, "wifi", SystemClock.uptimeMillis()+20_000)
+            } catch (e: SecurityException) { cleanupNetwork(cm); result.error("wifi", "Wi-Fi permission denied: ${e.message}") }
+        }
     }.start()
 
-    private fun performUpload(n: Network, file: File, slot:Int, crc:Long, result:MethodChannel.Result, cm:ConnectivityManager, cb:ConnectivityManager.NetworkCallback)=Thread {
+    private fun performUpload(n: Network, file: File, slot:Int, crc:Long, result:OnceResult, cm:ConnectivityManager, cb:ConnectivityManager.NetworkCallback)=Thread {
         try {
             val prefs=getSharedPreferences("notua", MODE_PRIVATE); val ip=prefs.getString("ip","192.168.4.1"); val port=prefs.getInt("port",80)
             val connection=n.openConnection(java.net.URL("http://$ip:$port/images/$slot")) as HttpURLConnection
             activeConnection=connection; connection.requestMethod="PUT"; connection.doOutput=true; connection.setFixedLengthStreamingMode(file.length()); connection.setRequestProperty("X-Notua-CRC32", "%08x".format(crc)); connection.connectTimeout=10000; connection.readTimeout=30000
             val start=SystemClock.elapsedRealtime(); var sent=0L; var prior=start; var priorBytes=0L
             FileInputStream(file).use { input -> connection.outputStream.use { output -> val b=ByteArray(16*1024); while(true){ val count=input.read(b); if(count<0)break; output.write(b,0,count); sent+=count; val now=SystemClock.elapsedRealtime(); if(now-prior>=250){ val instant=(sent-priorBytes)*1000.0/(now-prior)/1024; val average=sent*1000.0/(now-start)/1024; runOnUiThread { sink?.success(mapOf("sent" to sent,"total" to file.length(),"instantKiBs" to instant,"averageKiBs" to average,"elapsedMs" to now-start)) }; prior=now; priorBytes=sent } } } }
+            val finished=SystemClock.elapsedRealtime(); val average=sent*1000.0/(finished-start)/1024
+            runOnUiThread { sink?.success(mapOf("sent" to sent,"total" to file.length(),"instantKiBs" to average,"averageKiBs" to average,"elapsedMs" to finished-start)) }
             val body=(if(connection.responseCode<400) connection.inputStream else connection.errorStream).bufferedReader().readText()
             runOnUiThread { result.success(mapOf("httpStatus" to connection.responseCode,"body" to body,"crc32" to "%08x".format(crc))) }
-        } catch(e:Exception){ runOnUiThread { result.error("upload",e.message,null) } }
+        } catch(e:Exception){ runOnUiThread { result.error("upload",e.message ?: "Upload failed") } }
         finally { activeConnection=null; cleanupNetwork(cm) }
     }.start()
     private fun cleanupNetwork(cm: ConnectivityManager = getSystemService(ConnectivityManager::class.java)) {
@@ -168,7 +193,7 @@ class MainActivity : FlutterActivity() {
         callback=null; network=null
     }
     private fun cleanupAll() {
-        pendingPicker?.error("cancelled","Cancelled",null); pendingPicker=null
+        pendingPicker?.error("cancelled","Cancelled"); pendingPicker=null
         scanCallback?.let { try { getSystemService(BluetoothManager::class.java).adapter.bluetoothLeScanner.stopScan(it) } catch (_:Exception) {} }; scanCallback=null
         failBle("Cancelled"); cleanupNetwork()
     }
