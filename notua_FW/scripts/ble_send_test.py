@@ -14,6 +14,7 @@ CATALOG="7d2a4b70-8e67-4d8b-9f3a-36c89e210006"
 IMAGE_BYTES=1_920_000; MAX_IMAGES=5; WINDOW=8; PLAYLIST_BYTES=35
 MIN_INTERVAL_SECONDS=60; MAX_INTERVAL_SECONDS=24*60*60; DEFAULT_INTERVAL_SECONDS=300
 MAX_WRITE_POLL_SECONDS=10.0; MAX_WRITE_POLL_INTERVAL_SECONDS=0.5
+DATA_WRITE_TIMEOUT_SECONDS=10.0
 NAMES={1:"START_ACCEPTED",2:"ACK",3:"COMMITTED",4:"APPLYING",5:"PLAYLIST_COMMITTED",6:"SYNC_ACCEPTED",
 0x80:"BAD_COMMAND",0x81:"BAD_SIZE",0x82:"BAD_OFFSET",0x83:"QUEUE_FULL",0x84:"CRC_MISMATCH",
 0x85:"STORAGE_ERROR",0x86:"NOT_READY"}
@@ -36,7 +37,7 @@ class TransferDiagnostics:
 
     def print_summary(self)->None:
         average=self.ack_latency_total/self.ack_count if self.ack_count else 0.0
-        print(f"Status diagnostics: notifications={self.notifications}, "
+        print(f"TransferDiagnostics: notifications={self.notifications}, "
               f"notification_timeouts={self.notification_timeouts}, "
               f"fallback_status_reads={self.status_reads}, "
               f"ACK_latency_avg={average*1000:.1f} ms, ACK_latency_max={self.ack_latency_max*1000:.1f} ms")
@@ -92,8 +93,9 @@ async def wait_for_status(queue,client,timeout=15.0,diagnostics=None):
     except asyncio.TimeoutError:
         if diagnostics:
             diagnostics.notification_timeouts+=1; diagnostics.status_reads+=1
+        print("\nNotification-timeout fallback: reading persisted Transfer Status")
         status=decode_status(bytes(await client.read_gatt_char(STATUS)))
-        print(f"\nNotification timeout; read {NAMES.get(status[0],hex(status[0]))} at {status[1]:,}")
+        print(f"Fallback STATUS read: {NAMES.get(status[0],hex(status[0]))} persisted_offset={status[1]:,}")
         return status,True
 
 async def wait_for_max_write(characteristic,allow_slow=False,timeout=MAX_WRITE_POLL_SECONDS,
@@ -111,25 +113,41 @@ async def wait_for_max_write(characteristic,allow_slow=False,timeout=MAX_WRITE_P
     if maximum<=4: raise RuntimeError(f"invalid max_write_without_response_size: {maximum}")
     return maximum
 
+async def write_data_packet(client,payload:bytes,packet_offset:int,window_start:int,target_offset:int,
+                            diagnostics:TransferDiagnostics,timeout=DATA_WRITE_TIMEOUT_SECONDS):
+    started=time.monotonic()
+    try:
+        await asyncio.wait_for(client.write_gatt_char(DATA,payload,response=False),timeout)
+    except asyncio.TimeoutError as error:
+        elapsed=time.monotonic()-started
+        raise RuntimeError(
+            "DATA write timeout: "
+            f"packet_offset={packet_offset}, packet_length={len(payload)}, "
+            f"window_start={window_start}, window_target={target_offset}, "
+            f"elapsed={elapsed:.3f}s, notifications={diagnostics.notifications}, "
+            f"notification_timeouts={diagnostics.notification_timeouts}, "
+            f"fallback_status_reads={diagnostics.status_reads}") from error
+
 async def find_device(name):
     for device,advertisement in (await BleakScanner.discover(timeout=10,return_adv=True)).values():
         if device.name==(name or "Notua") or SERVICE in {u.lower() for u in advertisement.service_uuids}: return device
     raise RuntimeError("Notua not found")
 
 async def synchronize(args):
-    images=[]
-    for path in args.file:
-        data=path.read_bytes()
-        if len(data)!=IMAGE_BYTES: raise ValueError(f"{path}: expected {IMAGE_BYTES:,} bytes")
-        images.append(Image(path,data,zlib.crc32(data)&0xffffffff))
-    if len({image.crc for image in images})!=len(images): raise ValueError("duplicate image CRCs are not supported")
-    queue=asyncio.Queue(); diagnostics=TransferDiagnostics(); device=await find_device(args.name)
-    def notified(_sender,value):
-        try:
-            diagnostics.notifications+=1
-            queue.put_nowait(decode_status(bytes(value)))
-        except RuntimeError as error: print(f"Ignored status: {error}")
+    diagnostics=TransferDiagnostics()
     try:
+        images=[]
+        for path in args.file:
+            data=path.read_bytes()
+            if len(data)!=IMAGE_BYTES: raise ValueError(f"{path}: expected {IMAGE_BYTES:,} bytes")
+            images.append(Image(path,data,zlib.crc32(data)&0xffffffff))
+        if len({image.crc for image in images})!=len(images): raise ValueError("duplicate image CRCs are not supported")
+        queue=asyncio.Queue(); device=await find_device(args.name)
+        def notified(_sender,value):
+            try:
+                diagnostics.notifications+=1
+                queue.put_nowait(decode_status(bytes(value)))
+            except RuntimeError as error: print(f"Ignored status: {error}")
         async with BleakClient(device,timeout=20) as client:
             await client.start_notify(STATUS,notified)
             data_characteristic=client.services.get_characteristic(DATA)
@@ -175,11 +193,13 @@ async def synchronize(args):
                 if status[0]!=1: raise RuntimeError(f"START failed: {NAMES.get(status[0])}")
                 offset=0; started=time.monotonic()
                 while offset<len(image.data):
+                    window_start=offset
                     target_offset=min(len(image.data),offset+chunk*WINDOW)
                     send_offset=offset
                     while send_offset<target_offset:
                         part=image.data[send_offset:send_offset+chunk]
-                        await client.write_gatt_char(DATA,struct.pack("<I",send_offset)+part,response=False)
+                        packet=struct.pack("<I",send_offset)+part
+                        await write_data_packet(client,packet,send_offset,window_start,target_offset,diagnostics)
                         send_offset+=len(part)
                     ack_started=time.monotonic()
                     while True:
@@ -197,10 +217,10 @@ async def synchronize(args):
             status=await command(b"\x01\x04",{4})
             if status[0]!=4: raise RuntimeError(f"APPLY failed: {NAMES.get(status[0])}")
             print("Playlist committed; APPLY sent once")
-            diagnostics.print_summary()
     except Exception as error:
-        diagnostics.print_summary()
         raise RuntimeError(f"sync interrupted: {error}; reconnect and rerun to resume completed slots") from error
+    finally:
+        diagnostics.print_summary()
 
 def main():
     parser=argparse.ArgumentParser()
