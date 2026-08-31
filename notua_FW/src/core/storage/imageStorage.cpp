@@ -41,6 +41,7 @@ CleanupResult ImageStorage::recover() {
         if (!removeChecked(MARKER_PATH)) return CleanupResult::removeFailed;
         return CleanupResult::ok;
     }
+    if (!LittleFS.exists(MARKER_PATH)) return CleanupResult::backupRestoreFailed;
     // Marker is ASCII: P<slot> before durable sync progress, C<slot> after it.
     File marker = LittleFS.open(MARKER_PATH, FILE_READ);
     String value = marker ? marker.readString() : String();
