@@ -5,6 +5,7 @@
 #include "core/storage/imageStorage.h"
 #include "core/storage/imageCatalog.h"
 #include "core/storage/playlistStore.h"
+#include "core/network/softApTransfer.h"
 
 #include <NimBLEDevice.h>
 #include <Preferences.h>
@@ -20,6 +21,7 @@ constexpr const char* CONTROL_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210003";
 constexpr const char* DATA_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210004";
 constexpr const char* TRANSFER_STATUS_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210005";
 constexpr const char* CATALOG_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210006";
+constexpr const char* SOFTAP_INFO_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210007";
 constexpr uint32_t INITIAL_ADVERTISING_MS = 60UL * 1000UL;
 constexpr uint32_t RECONNECT_ADVERTISING_MS = 30UL * 1000UL;
 constexpr uint32_t CONNECTED_INACTIVITY_MS = 120UL * 1000UL;
@@ -151,8 +153,19 @@ class StatusCallbacks final : public NimBLECharacteristicCallbacks {
 class ControlCallbacks final : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
         noteBleGattActivity();
+        if (characteristic->getValue() == "START_AP") {
+            requestSoftApStart();
+            return;
+        }
         if (!enqueueTransfer(TransferEventType::control, characteristic->getValue()))
             enqueueFeedback(notua::transfer::Status::queueFull);
+    }
+};
+
+class SoftApInfoCallbacks final : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
+        characteristic->setValue(softApConnectionInfo().c_str());
+        noteBleGattActivity();
     }
 };
 
@@ -171,6 +184,7 @@ ServerCallbacks gServerCallbacks;
 StatusCallbacks gStatusCallbacks;
 ControlCallbacks gControlCallbacks;
 DataCallbacks gDataCallbacks;
+SoftApInfoCallbacks gSoftApInfoCallbacks;
 
 void cleanupAfterInitializationFailure(const char* step) {
     logError(TAG, "initialization failed: step=%s", step);
@@ -263,7 +277,8 @@ bool beginBlePeripheral() {
     gTransferStatus = service->createCharacteristic(TRANSFER_STATUS_UUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
     gCatalogCharacteristic = service->createCharacteristic(CATALOG_UUID, NIMBLE_PROPERTY::READ);
-    if (!control || !data || !gTransferStatus || !gCatalogCharacteristic) {
+    NimBLECharacteristic* softApInfo = service->createCharacteristic(SOFTAP_INFO_UUID, NIMBLE_PROPERTY::READ);
+    if (!control || !data || !gTransferStatus || !gCatalogCharacteristic || !softApInfo) {
         cleanupAfterInitializationFailure("transfer_characteristics"); return false;
     }
     control->setCallbacks(&gControlCallbacks); data->setCallbacks(&gDataCallbacks);
@@ -272,6 +287,8 @@ bool beginBlePeripheral() {
     notua::transfer::encodeStatus(initial, notua::transfer::Status::notReady, 0, 0);
     gTransferStatus->setValue(initial, sizeof(initial));
     gCatalogCharacteristic->setCallbacks(&gStatusCallbacks);
+    softApInfo->setCallbacks(&gSoftApInfoCallbacks);
+    softApInfo->setValue(softApConnectionInfo().c_str());
     if (!refreshCatalogValue()) { cleanupAfterInitializationFailure("catalog"); return false; }
     Preferences pendingPreferences;
     if (pendingPreferences.begin("photo-cycle", true)) {
@@ -506,6 +523,7 @@ bool bleSessionExpired() {
 }
 
 void stopBlePeripheral() {
+    stopSoftApTransfer("BLE shutdown");
     const BleState finalState = gState == BleState::initializationFailed
         ? BleState::initializationFailed : BleState::stopped;
     if (gServer) {

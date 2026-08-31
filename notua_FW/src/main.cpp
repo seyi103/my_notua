@@ -18,6 +18,7 @@
 #include "core/storage/imageCatalog.h"
 #include "core/storage/imageStorage.h"
 #include "core/storage/playlistStore.h"
+#include "core/network/softApTransfer.h"
 
 namespace {
 constexpr const char* TAG = "PHOTO_CYCLE";
@@ -386,6 +387,7 @@ void loop() {
     if (gWakePath == WakePath::buttonBle) {
         feedWatchdog();
         pollBlePeripheral();
+        pollSoftApTransfer();
         if (consumeBleApplyRequest()) {
             logInfo(TAG, "APPLY accepted; allowing notification delivery before restart");
             delay(350);
