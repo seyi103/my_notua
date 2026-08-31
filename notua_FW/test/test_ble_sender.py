@@ -4,9 +4,12 @@ import asyncio
 import importlib
 import struct
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 fake_bleak = types.ModuleType("bleak")
 fake_bleak.BleakClient = object
@@ -24,6 +27,13 @@ class FakeClient:
         self.reads += 1
         assert uuid == sender.STATUS
         return self.status
+
+
+class StallingWriteClient:
+    async def write_gatt_char(self, uuid, payload, response=False):
+        assert uuid == sender.DATA
+        assert response is False
+        await asyncio.sleep(1)
 
 
 class FakeCharacteristic:
@@ -82,6 +92,45 @@ class SenderRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, (2, 8192, 0))
         self.assertFalse(recovered)
         self.assertEqual(client.reads, 0)
+
+    async def test_data_write_timeout_reports_transfer_context(self):
+        diagnostics = sender.TransferDiagnostics(notifications=7, notification_timeouts=2, status_reads=2)
+        with self.assertRaises(RuntimeError) as raised:
+            await sender.write_data_packet(
+                StallingWriteClient(), b"x" * 512, 4064, 4064, 8128, diagnostics, timeout=0.001)
+        message = str(raised.exception)
+        self.assertIn("DATA write timeout", message)
+        self.assertIn("packet_offset=4064", message)
+        self.assertIn("packet_length=512", message)
+        self.assertIn("window_start=4064", message)
+        self.assertIn("window_target=8128", message)
+        self.assertIn("notifications=7", message)
+        self.assertIn("notification_timeouts=2", message)
+        self.assertIn("fallback_status_reads=2", message)
+
+    async def test_diagnostic_summary_printed_on_normal_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "image.bin"
+            image_path.write_bytes(b"\0" * sender.IMAGE_BYTES)
+            args = SimpleNamespace(file=[image_path], name=None, revision=None, interval=300,
+                                   allow_slow_write=False)
+            with mock.patch.object(sender, "find_device", new=mock.AsyncMock(side_effect=RuntimeError("boom"))), \
+                    mock.patch.object(sender.TransferDiagnostics, "print_summary") as summary:
+                with self.assertRaisesRegex(RuntimeError, "sync interrupted: boom"):
+                    await sender.synchronize(args)
+                summary.assert_called_once()
+
+    async def test_diagnostic_summary_printed_and_cancellation_not_wrapped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "image.bin"
+            image_path.write_bytes(b"\0" * sender.IMAGE_BYTES)
+            args = SimpleNamespace(file=[image_path], name=None, revision=None, interval=300,
+                                   allow_slow_write=False)
+            with mock.patch.object(sender, "find_device", new=mock.AsyncMock(side_effect=asyncio.CancelledError())), \
+                    mock.patch.object(sender.TransferDiagnostics, "print_summary") as summary:
+                with self.assertRaises(asyncio.CancelledError):
+                    await sender.synchronize(args)
+                summary.assert_called_once()
 
     def test_malformed_status_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "expected 12"):
