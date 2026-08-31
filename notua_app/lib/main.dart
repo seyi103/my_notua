@@ -5,7 +5,7 @@ void main()=>runApp(const MyApp());
 class MyApp extends StatelessWidget { const MyApp({super.key}); @override Widget build(BuildContext context)=>MaterialApp(title:'Notua transfer spike',theme:ThemeData(colorScheme:ColorScheme.fromSeed(seedColor:Colors.indigo),useMaterial3:true),home:const TransferScreen()); }
 class TransferScreen extends StatefulWidget { const TransferScreen({super.key}); @override State<TransferScreen> createState()=>_TransferScreenState(); }
 class _TransferScreenState extends State<TransferScreen>{
- static const method=MethodChannel('notua/softap'), progress=EventChannel('notua/softap_progress'); String? path; String status='Select a 1,920,000-byte Y8 BIN'; double fraction=0,instant=0,average=0; int elapsed=0; StreamSubscription? sub;
+ static const method=MethodChannel('notua/softap'), progress=EventChannel('notua/softap_progress'); String? path; String status='Select an existing 1,920,000-byte Y8 BIN (photo conversion is out of scope)'; double fraction=0,instant=0,average=0; int elapsed=0; StreamSubscription? sub;
  @override void initState(){super.initState();sub=progress.receiveBroadcastStream().listen((dynamic e){final m=Map<String,dynamic>.from(e);setState((){fraction=m['sent']/m['total'];instant=m['instantKiBs'];average=m['averageKiBs'];elapsed=m['elapsedMs'];});});}
  @override void dispose(){sub?.cancel();super.dispose();}
  Future<void> select()async{try{final p=await method.invokeMethod<String>('selectFile');setState((){path=p;status=p??'No file';});}catch(e){setState(()=>status='$e');}}

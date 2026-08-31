@@ -31,6 +31,11 @@ class MainActivity : FlutterActivity() {
     private var pendingPicker: MethodChannel.Result? = null
     private var network: Network? = null
     private var callback: ConnectivityManager.NetworkCallback? = null
+    private var activeGatt: BluetoothGatt? = null
+    private var activeConnection: HttpURLConnection? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private var pendingConnect: MethodChannel.Result? = null
+    private var scanCallback: ScanCallback? = null
 
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
@@ -43,6 +48,7 @@ class MainActivity : FlutterActivity() {
                 "selectFile" -> { pendingPicker = result; startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type="application/octet-stream"; addCategory(Intent.CATEGORY_OPENABLE) }, 44) }
                 "connect" -> connectBle(result)
                 "upload" -> upload(call.argument<String>("path")!!, call.argument<Int>("slot") ?: 0, result)
+                "cancel" -> { cleanupAll(); result.success(null) }
                 else -> result.notImplemented()
             }
         }
@@ -66,26 +72,65 @@ class MainActivity : FlutterActivity() {
             ActivityCompat.requestPermissions(this, permissions.toTypedArray(), 91)
             result.error("permissions", "Grant nearby device permissions, then tap Connect again", null); return
         }
+        pendingConnect = result
         val adapter = getSystemService(BluetoothManager::class.java).adapter
-        var returned = false
-        adapter.bluetoothLeScanner.startScan(object: ScanCallback() {
-            override fun onScanResult(type: Int, scan: ScanResult) {
-                if (returned || scan.device.name != "Notua") return
-                returned = true; adapter.bluetoothLeScanner.stopScan(this)
-                scan.device.connectGatt(this@MainActivity, false, object: BluetoothGattCallback() {
-                    override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, state: Int) { if (state == BluetoothProfile.STATE_CONNECTED) gatt.discoverServices() }
-                    override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) { gatt.readCharacteristic(gatt.getService(serviceUuid).getCharacteristic(infoUuid)) }
-                    @Deprecated("Deprecated in API 33") override fun onCharacteristicRead(gatt: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
-                        if (c.uuid != infoUuid || status != BluetoothGatt.GATT_SUCCESS) { result.error("ble", "Unable to read AP info", null); gatt.close(); return }
-                        val json = String(c.value, Charsets.UTF_8)
-                        val info = JSONObject(json)
-                        getSharedPreferences("notua", MODE_PRIVATE).edit().putString("ssid", info.getString("ssid")).putString("password", info.getString("password")).putString("ip", info.getString("ip")).putInt("port", info.getInt("port")).apply()
-                        val control = gatt.getService(serviceUuid).getCharacteristic(controlUuid); control.value = "START_AP".toByteArray(); gatt.writeCharacteristic(control)
-                        runOnUiThread { result.success(json) }; gatt.disconnect(); gatt.close()
+        val scanner = adapter.bluetoothLeScanner
+        val scan = object: ScanCallback() {
+            override fun onScanResult(type: Int, found: ScanResult) {
+                if (found.device.name != "Notua" || pendingConnect == null) return
+                scanner.stopScan(this); scanCallback = null; handler.removeCallbacksAndMessages("ble-scan")
+                activeGatt = found.device.connectGatt(this@MainActivity, false, object: BluetoothGattCallback() {
+                    override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, state: Int) {
+                        if (status != BluetoothGatt.GATT_SUCCESS) failBle("GATT connection failed: $status")
+                        else if (state == BluetoothProfile.STATE_CONNECTED) gatt.discoverServices()
+                        else if (state == BluetoothProfile.STATE_DISCONNECTED && pendingConnect != null) failBle("GATT disconnected")
+                    }
+                    override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                        if (status != BluetoothGatt.GATT_SUCCESS) failBle("Service discovery failed: $status")
+                        else gatt.readCharacteristic(gatt.getService(serviceUuid)?.getCharacteristic(infoUuid) ?: run { failBle("AP info characteristic missing"); return })
+                    }
+                    @Deprecated("API 33 compatibility")
+                    override fun onCharacteristicRead(gatt: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
+                        if (Build.VERSION.SDK_INT < 33) handleInfoRead(gatt, c, c.value, status)
+                    }
+                    override fun onCharacteristicRead(gatt: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
+                        handleInfoRead(gatt, c, value, status)
+                    }
+                    override fun onCharacteristicWrite(gatt: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
+                        if (c.uuid != controlUuid) return
+                        handler.removeCallbacksAndMessages("gatt-write")
+                        if (status != BluetoothGatt.GATT_SUCCESS) failBle("START_AP write failed: $status")
+                        else {
+                            val complete = pendingConnect; pendingConnect = null
+                            gatt.disconnect(); gatt.close(); activeGatt = null
+                            runOnUiThread { complete?.success(getSharedPreferences("notua", MODE_PRIVATE).getString("json", "")) }
+                        }
                     }
                 })
             }
-        })
+            override fun onScanFailed(errorCode: Int) { failBle("BLE scan failed: $errorCode") }
+        }
+        scanCallback = scan; scanner.startScan(scan)
+        handler.postAtTime({ if (pendingConnect != null) { scanner.stopScan(scan); scanCallback=null; failBle("BLE scan timed out") } }, "ble-scan", SystemClock.uptimeMillis()+15_000)
+    }
+
+    private fun handleInfoRead(gatt: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
+        if (c.uuid != infoUuid || status != BluetoothGatt.GATT_SUCCESS) { failBle("Unable to read AP info"); return }
+        try {
+            val json=String(value, Charsets.UTF_8); val info=JSONObject(json)
+            getSharedPreferences("notua", MODE_PRIVATE).edit().putString("json",json).putString("ssid",info.getString("ssid")).putString("password",info.getString("password")).putString("ip",info.getString("ip")).putInt("port",info.getInt("port")).apply()
+            val control=gatt.getService(serviceUuid).getCharacteristic(controlUuid); val command="START_AP".toByteArray()
+            val started = if (Build.VERSION.SDK_INT >= 33) gatt.writeCharacteristic(control, command, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
+                else { @Suppress("DEPRECATION") control.value=command; @Suppress("DEPRECATION") gatt.writeCharacteristic(control) }
+            if (!started) { failBle("Unable to start START_AP write"); return }
+            handler.postAtTime({ if(pendingConnect != null) failBle("START_AP write timed out") }, "gatt-write", SystemClock.uptimeMillis()+5_000)
+        } catch(e:Exception) { failBle("Invalid AP info: ${e.message}") }
+    }
+
+    private fun failBle(message:String) {
+        handler.removeCallbacksAndMessages("ble-scan"); handler.removeCallbacksAndMessages("gatt-write")
+        activeGatt?.disconnect(); activeGatt?.close(); activeGatt=null
+        val result=pendingConnect; pendingConnect=null; runOnUiThread { result?.error("ble",message,null) }
     }
 
     private fun upload(path: String, slot: Int, result: MethodChannel.Result) = Thread {
@@ -99,22 +144,34 @@ class MainActivity : FlutterActivity() {
         val spec=WifiNetworkSpecifier.Builder().setSsid(ssid).setWpa2Passphrase(info.getString("password", "")!!).build()
         val request=NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).setNetworkSpecifier(spec).build()
         callback=object: ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(n: Network) { network=n; performUpload(n,file,slot,crc.value,result,cm,this) }
-            override fun onUnavailable() { runOnUiThread { result.error("wifi", "Notua network unavailable", null) } }
+            override fun onAvailable(n: Network) { handler.removeCallbacksAndMessages("wifi"); network=n; performUpload(n,file,slot,crc.value,result,cm,this) }
+            override fun onUnavailable() { cleanupNetwork(cm); runOnUiThread { result.error("wifi", "Notua network unavailable", null) } }
         }
-        runOnUiThread { cm.requestNetwork(request, callback!!) }
+        runOnUiThread { cm.requestNetwork(request, callback!!); handler.postAtTime({ if(network==null){ cleanupNetwork(cm); result.error("wifi","Notua network request timed out",null) } }, "wifi", SystemClock.uptimeMillis()+20_000) }
     }.start()
 
     private fun performUpload(n: Network, file: File, slot:Int, crc:Long, result:MethodChannel.Result, cm:ConnectivityManager, cb:ConnectivityManager.NetworkCallback)=Thread {
         try {
             val prefs=getSharedPreferences("notua", MODE_PRIVATE); val ip=prefs.getString("ip","192.168.4.1"); val port=prefs.getInt("port",80)
             val connection=n.openConnection(java.net.URL("http://$ip:$port/images/$slot")) as HttpURLConnection
-            connection.requestMethod="PUT"; connection.doOutput=true; connection.setFixedLengthStreamingMode(file.length()); connection.setRequestProperty("X-Notua-CRC32", "%08x".format(crc)); connection.connectTimeout=10000; connection.readTimeout=30000
+            activeConnection=connection; connection.requestMethod="PUT"; connection.doOutput=true; connection.setFixedLengthStreamingMode(file.length()); connection.setRequestProperty("X-Notua-CRC32", "%08x".format(crc)); connection.connectTimeout=10000; connection.readTimeout=30000
             val start=SystemClock.elapsedRealtime(); var sent=0L; var prior=start; var priorBytes=0L
-            FileInputStream(file).use { input -> connection.outputStream.use { output -> val b=ByteArray(16*1024); while(true){ val count=input.read(b); if(count<0)break; output.write(b,0,count); sent+=count; val now=SystemClock.elapsedRealtime(); if(now-prior>=250){ val instant=(sent-priorBytes)*1000.0/(now-prior)/1024; val average=sent*1000.0/(now-start)/1024; sink?.success(mapOf("sent" to sent,"total" to file.length(),"instantKiBs" to instant,"averageKiBs" to average,"elapsedMs" to now-start)); prior=now; priorBytes=sent } } } }
+            FileInputStream(file).use { input -> connection.outputStream.use { output -> val b=ByteArray(16*1024); while(true){ val count=input.read(b); if(count<0)break; output.write(b,0,count); sent+=count; val now=SystemClock.elapsedRealtime(); if(now-prior>=250){ val instant=(sent-priorBytes)*1000.0/(now-prior)/1024; val average=sent*1000.0/(now-start)/1024; runOnUiThread { sink?.success(mapOf("sent" to sent,"total" to file.length(),"instantKiBs" to instant,"averageKiBs" to average,"elapsedMs" to now-start)) }; prior=now; priorBytes=sent } } } }
             val body=(if(connection.responseCode<400) connection.inputStream else connection.errorStream).bufferedReader().readText()
             runOnUiThread { result.success(mapOf("httpStatus" to connection.responseCode,"body" to body,"crc32" to "%08x".format(crc))) }
         } catch(e:Exception){ runOnUiThread { result.error("upload",e.message,null) } }
-        finally { cm.unregisterNetworkCallback(cb); network=null; callback=null }
+        finally { activeConnection=null; cleanupNetwork(cm) }
     }.start()
+    private fun cleanupNetwork(cm: ConnectivityManager = getSystemService(ConnectivityManager::class.java)) {
+        handler.removeCallbacksAndMessages("wifi"); activeConnection?.disconnect(); activeConnection=null
+        callback?.let { try { cm.unregisterNetworkCallback(it) } catch (_:Exception) {} }
+        callback=null; network=null
+    }
+    private fun cleanupAll() {
+        pendingPicker?.error("cancelled","Cancelled",null); pendingPicker=null
+        scanCallback?.let { try { getSystemService(BluetoothManager::class.java).adapter.bluetoothLeScanner.stopScan(it) } catch (_:Exception) {} }; scanCallback=null
+        failBle("Cancelled"); cleanupNetwork()
+    }
+    override fun onDestroy() { cleanupAll(); super.onDestroy() }
+
 }

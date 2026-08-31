@@ -18,7 +18,9 @@
 #include "core/storage/imageCatalog.h"
 #include "core/storage/imageStorage.h"
 #include "core/storage/playlistStore.h"
+#if NOTUA_SOFTAP_HTTP_SPIKE
 #include "core/network/softApTransfer.h"
+#endif
 
 namespace {
 constexpr const char* TAG = "PHOTO_CYCLE";
@@ -387,7 +389,9 @@ void loop() {
     if (gWakePath == WakePath::buttonBle) {
         feedWatchdog();
         pollBlePeripheral();
+#if NOTUA_SOFTAP_HTTP_SPIKE
         pollSoftApTransfer();
+#endif
         if (consumeBleApplyRequest()) {
             logInfo(TAG, "APPLY accepted; allowing notification delivery before restart");
             delay(350);

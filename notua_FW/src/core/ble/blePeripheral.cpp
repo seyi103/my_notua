@@ -5,7 +5,10 @@
 #include "core/storage/imageStorage.h"
 #include "core/storage/imageCatalog.h"
 #include "core/storage/playlistStore.h"
+#include "core/storage/transferSession.h"
+#if NOTUA_SOFTAP_HTTP_SPIKE
 #include "core/network/softApTransfer.h"
+#endif
 
 #include <NimBLEDevice.h>
 #include <Preferences.h>
@@ -21,7 +24,9 @@ constexpr const char* CONTROL_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210003";
 constexpr const char* DATA_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210004";
 constexpr const char* TRANSFER_STATUS_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210005";
 constexpr const char* CATALOG_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210006";
+#if NOTUA_SOFTAP_HTTP_SPIKE
 constexpr const char* SOFTAP_INFO_UUID = "7d2a4b70-8e67-4d8b-9f3a-36c89e210007";
+#endif
 constexpr uint32_t INITIAL_ADVERTISING_MS = 60UL * 1000UL;
 constexpr uint32_t RECONNECT_ADVERTISING_MS = 30UL * 1000UL;
 constexpr uint32_t CONNECTED_INACTIVITY_MS = 120UL * 1000UL;
@@ -153,19 +158,8 @@ class StatusCallbacks final : public NimBLECharacteristicCallbacks {
 class ControlCallbacks final : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
         noteBleGattActivity();
-        if (characteristic->getValue() == "START_AP") {
-            requestSoftApStart();
-            return;
-        }
         if (!enqueueTransfer(TransferEventType::control, characteristic->getValue()))
             enqueueFeedback(notua::transfer::Status::queueFull);
-    }
-};
-
-class SoftApInfoCallbacks final : public NimBLECharacteristicCallbacks {
-    void onRead(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
-        characteristic->setValue(softApConnectionInfo().c_str());
-        noteBleGattActivity();
     }
 };
 
@@ -184,7 +178,6 @@ ServerCallbacks gServerCallbacks;
 StatusCallbacks gStatusCallbacks;
 ControlCallbacks gControlCallbacks;
 DataCallbacks gDataCallbacks;
-SoftApInfoCallbacks gSoftApInfoCallbacks;
 
 void cleanupAfterInitializationFailure(const char* step) {
     logError(TAG, "initialization failed: step=%s", step);
@@ -277,8 +270,14 @@ bool beginBlePeripheral() {
     gTransferStatus = service->createCharacteristic(TRANSFER_STATUS_UUID,
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
     gCatalogCharacteristic = service->createCharacteristic(CATALOG_UUID, NIMBLE_PROPERTY::READ);
+#if NOTUA_SOFTAP_HTTP_SPIKE
     NimBLECharacteristic* softApInfo = service->createCharacteristic(SOFTAP_INFO_UUID, NIMBLE_PROPERTY::READ);
-    if (!control || !data || !gTransferStatus || !gCatalogCharacteristic || !softApInfo) {
+#endif
+    if (!control || !data || !gTransferStatus || !gCatalogCharacteristic
+#if NOTUA_SOFTAP_HTTP_SPIKE
+        || !softApInfo
+#endif
+    ) {
         cleanupAfterInitializationFailure("transfer_characteristics"); return false;
     }
     control->setCallbacks(&gControlCallbacks); data->setCallbacks(&gDataCallbacks);
@@ -287,8 +286,9 @@ bool beginBlePeripheral() {
     notua::transfer::encodeStatus(initial, notua::transfer::Status::notReady, 0, 0);
     gTransferStatus->setValue(initial, sizeof(initial));
     gCatalogCharacteristic->setCallbacks(&gStatusCallbacks);
-    softApInfo->setCallbacks(&gSoftApInfoCallbacks);
+#if NOTUA_SOFTAP_HTTP_SPIKE
     softApInfo->setValue(softApConnectionInfo().c_str());
+#endif
     if (!refreshCatalogValue()) { cleanupAfterInitializationFailure("catalog"); return false; }
     Preferences pendingPreferences;
     if (pendingPreferences.begin("photo-cycle", true)) {
@@ -360,6 +360,7 @@ void pollBlePeripheral() {
             break;
         case BleEventType::disconnected: {
             gStorage.abort(); gCommitted = false;
+            notua::storage::releaseTransferSession(notua::storage::TransferOwner::ble);
             if (gTransferQueue) xQueueReset(gTransferQueue);
             if (gFeedbackQueue) xQueueReset(gFeedbackQueue);
             const bool started = gServer && gServer->startAdvertising();
@@ -412,7 +413,12 @@ void pollBlePeripheral() {
                 if (gPlaylistStore.loadTarget(target, done, stage)) for (uint8_t i = 0; i < target.count; ++i)
                     if (target.slots[i] == start.slot && target.crc32[i] == start.crc32) expected = true;
                 if (!expected) { publishStatus(Status::notReady, 0, start.slot); continue; }
+                if (!notua::storage::acquireTransferSession(notua::storage::TransferOwner::ble)) {
+                    publishStatus(Status::busy, gStorage.offset()); continue;
+                }
                 const auto result = gStorage.start(start.slot, start.size, start.crc32);
+                if (result != notua::storage::StartResult::ok)
+                    notua::storage::releaseTransferSession(notua::storage::TransferOwner::ble);
                 using notua::storage::StartResult;
                 if (result == StartResult::ok) { gCommitted = false; publishStatus(Status::startAccepted, 0); }
                 else if (result == StartResult::badSize) publishStatus(Status::badSize, 0, start.size);
@@ -422,7 +428,12 @@ void pollBlePeripheral() {
                 else publishStatus(Status::notReady, 0, static_cast<uint32_t>(result));
             }
         } else if (isSimpleCommand(transfer.bytes, transfer.length, Opcode::abort)) {
-            gStorage.abort(); gCommitted = false; publishStatus(Status::ack, 0);
+            gStorage.abort(); notua::storage::releaseTransferSession(notua::storage::TransferOwner::ble);
+            gCommitted = false; publishStatus(Status::ack, 0);
+#if NOTUA_SOFTAP_HTTP_SPIKE
+        } else if (transfer.length == 8 && memcmp(transfer.bytes, "START_AP", 8) == 0) {
+            requestSoftApStart(); publishStatus(Status::ack, 0);
+#endif
         } else if (transfer.length == 2 + notua::storage::PLAYLIST_BYTES
             && transfer.bytes[0] == VERSION && transfer.bytes[1] == static_cast<uint8_t>(Opcode::syncBegin)) {
             notua::storage::Playlist target{};
@@ -433,6 +444,7 @@ void pollBlePeripheral() {
             else { gCommitted = false; publishStatus(Status::syncAccepted, 0); }
         } else if (isSimpleCommand(transfer.bytes, transfer.length, Opcode::finish)) {
             uint32_t detail = 0; const auto result = gStorage.finish(detail);
+            notua::storage::releaseTransferSession(notua::storage::TransferOwner::ble);
             using notua::storage::CommitResult;
             if (result == CommitResult::committed) {
                 if (!gPlaylistStore.markSlotComplete(gStorage.slot())) {
@@ -523,7 +535,9 @@ bool bleSessionExpired() {
 }
 
 void stopBlePeripheral() {
+#if NOTUA_SOFTAP_HTTP_SPIKE
     stopSoftApTransfer("BLE shutdown");
+#endif
     const BleState finalState = gState == BleState::initializationFailed
         ? BleState::initializationFailed : BleState::stopped;
     if (gServer) {
@@ -543,6 +557,7 @@ void stopBlePeripheral() {
     gTransferStatus = nullptr;
     gCatalogCharacteristic = nullptr;
     gStorage.abort();
+    notua::storage::releaseTransferSession(notua::storage::TransferOwner::ble);
     gPlaylistStore.end();
     if (gLifecycleQueue) {
         vQueueDelete(gLifecycleQueue);

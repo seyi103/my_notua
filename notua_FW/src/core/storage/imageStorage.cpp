@@ -81,6 +81,22 @@ StartResult ImageStorage::start(uint8_t slot, uint32_t size, uint32_t crc32) {
     return StartResult::ok;
 }
 
+StartResult ImageStorage::startSpike(uint32_t size, uint32_t crc32) {
+    if (abort() != CleanupResult::ok) return StartResult::cleanupFailed;
+    if (size != notua::transfer::IMAGE_BYTES) return StartResult::badSize;
+    if (!begin()) return StartResult::catalogError;
+    const size_t free = LittleFS.totalBytes() - LittleFS.usedBytes();
+    if (free < IMAGE_BYTES + FILESYSTEM_SAFETY_MARGIN) return StartResult::noSpace;
+    slot_ = 0xff;
+    finalPath_ = "/images/softap_spike.bin";
+    tempPath_ = TEMP_PATH;
+    if (!removeChecked(TEMP_PATH)) return StartResult::cleanupFailed;
+    file_ = LittleFS.open(tempPath_, FILE_WRITE);
+    if (!file_) return StartResult::openFailed;
+    offset_ = 0; expectedCrc_ = crc32; crc_.reset(); active_ = true;
+    return StartResult::ok;
+}
+
 bool ImageStorage::append(const uint8_t* data, size_t length) {
     if (!active_ || !data || length == 0 || offset_ + length > notua::transfer::IMAGE_BYTES) return false;
     if (file_.write(data, length) != length) return false;

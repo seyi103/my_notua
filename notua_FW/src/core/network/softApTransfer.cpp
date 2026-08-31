@@ -6,6 +6,8 @@
 #include "core/power/watchdog.h"
 #include "core/storage/imageStorage.h"
 #include "core/storage/imageCatalog.h"
+#include "core/storage/playlistStore.h"
+#include "core/storage/transferSession.h"
 
 namespace {
 constexpr char PASSWORD[] = "notua-dev-2026"; // Development only; not a production secret.
@@ -32,6 +34,7 @@ void fail(int code, const char* reason) {
   const size_t received = storage.offset();
   if (storage.active()) storage.abort();
   uploading = false;
+  notua::storage::releaseTransferSession(notua::storage::TransferOwner::softAp);
   reply(code, String("{\"ok\":false,\"bytesReceived\":") + received
       + ",\"crcMatch\":false,\"error\":\"" + reason + "\"}");
   logWarn("SOFTAP", "upload aborted: reason=%s bytes=%u", reason, received);
@@ -74,7 +77,15 @@ void acceptRequest() {
   if (slot < 0 || slot >= notua::storage::MAX_IMAGES) { fail(400, "slot"); return; }
   if (!haveLength || length != IMAGE_BYTES) { fail(411, "content-length"); return; }
   if (!haveCrc) { fail(400, "crc-header"); return; }
-  if (storage.start(slot, length, expectedCrc) != notua::storage::StartResult::ok) { fail(507, "storage-start"); return; }
+  notua::storage::CatalogEntry catalog[notua::storage::MAX_IMAGES];
+  notua::storage::Playlist active{}; notua::storage::PlaylistStore playlists;
+  if (!notua::storage::scanFixedCatalog(LittleFS, catalog) || !playlists.begin()
+      || !playlists.loadActiveValidated(catalog, active)) { playlists.end(); fail(503, "playlist-read"); return; }
+  playlists.end();
+  for (uint8_t i = 0; i < active.count; ++i)
+    if (active.slots[i] == slot) { fail(409, "active-slot"); return; }
+  if (!notua::storage::acquireTransferSession(notua::storage::TransferOwner::softAp)) { fail(409, "busy"); return; }
+  if (storage.startSpike(length, expectedCrc) != notua::storage::StartResult::ok) { fail(507, "storage-start"); return; }
   remaining = length; uploading = true; started = lastActivity = millis(); lastLogged = 0;
   logInfo("SOFTAP", "HTTP upload start: slot=%d bytes=%u crc=%08lx", slot, length, expectedCrc);
 }
@@ -94,6 +105,7 @@ String softApConnectionInfo() {
 void stopSoftApTransfer(const char* reason) {
   if (!running) return;
   if (storage.active()) storage.abort();
+  notua::storage::releaseTransferSession(notua::storage::TransferOwner::softAp);
   client.stop(); server.stop(); WiFi.softAPdisconnect(true); WiFi.mode(WIFI_OFF);
   running = uploading = false;
   logInfo("SOFTAP", "stopped: reason=%s", reason);
@@ -126,8 +138,11 @@ void pollSoftApTransfer() {
     if (!remaining) {
       uint32_t detail = 0; const auto result = storage.finish(detail); const uint32_t elapsed = millis() - started;
       const bool ok = result == notua::storage::CommitResult::committed && storage.finalizeCommit() == notua::storage::CleanupResult::ok;
+      notua::storage::releaseTransferSession(notua::storage::TransferOwner::softAp);
+      const float rate = IMAGE_BYTES * 1000.0f / max(static_cast<uint32_t>(1), elapsed) / 1024.0f;
       reply(ok ? 200 : 422, String("{\"ok\":") + (ok ? "true" : "false") + ",\"bytesReceived\":"
-          + IMAGE_BYTES + ",\"crcMatch\":" + (ok ? "true" : "false") + ",\"elapsedMs\":" + elapsed + "}");
+          + IMAGE_BYTES + ",\"crcMatch\":" + (ok ? "true" : "false") + ",\"elapsedMs\":" + elapsed
+          + ",\"averageKiBs\":" + String(rate, 1) + ",\"crc32\":\"" + String(detail, HEX) + "\"}");
       logInfo("SOFTAP", "upload result: committed=%s crc=%s elapsed_ms=%u average_kib_s=%.1f", ok ? "true" : "false", ok ? "match" : "mismatch", elapsed, IMAGE_BYTES * 1000.0f / max(static_cast<uint32_t>(1), elapsed) / 1024.0f);
       client.stop(); uploading = false; delay(100); stopSoftApTransfer("completed"); return;
     }
