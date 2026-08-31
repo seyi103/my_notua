@@ -7,6 +7,10 @@ namespace notua::storage {
 
 std::vector<String> collectImageCatalog(fs::FS& filesystem, bool* tooMany) {
     std::vector<String> images;
+    if (!filesystem.exists("/images")) {
+        if (tooMany) *tooMany = false;
+        return images;
+    }
     File directory = filesystem.open("/images");
     if (!directory || !directory.isDirectory()) {
         if (tooMany) *tooMany = false;
@@ -27,6 +31,7 @@ bool scanFixedCatalog(fs::FS& filesystem, CatalogEntry output[MAX_IMAGES]) {
     for (uint8_t slot = 0; slot < MAX_IMAGES; ++slot) {
         output[slot] = {}; output[slot].slot = slot;
         const String path = String("/images/slot_") + slot + ".bin";
+        if (!filesystem.exists(path)) continue;
         File file = filesystem.open(path, FILE_READ);
         if (!file) continue;
         output[slot].exists = true; output[slot].size = file.size();
