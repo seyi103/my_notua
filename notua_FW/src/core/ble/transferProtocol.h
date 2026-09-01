@@ -18,7 +18,7 @@ enum class Status : uint8_t {
     startAccepted = 0x01, ack = 0x02, committed = 0x03, applying = 0x04,
     playlistCommitted = 0x05, syncAccepted = 0x06,
     badCommand = 0x80, badSize = 0x81, badOffset = 0x82, queueFull = 0x83,
-    crcMismatch = 0x84, storageError = 0x85, notReady = 0x86,
+    crcMismatch = 0x84, storageError = 0x85, notReady = 0x86, busy = 0x87,
 };
 
 struct StartCommand { uint8_t slot; uint32_t size; uint32_t crc32; };

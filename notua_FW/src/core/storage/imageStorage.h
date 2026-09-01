@@ -19,6 +19,7 @@ class ImageStorage {
 public:
     bool begin();
     StartResult start(uint8_t slot, uint32_t size, uint32_t crc32);
+    StartResult startSpike(uint32_t size, uint32_t crc32);
     bool append(const uint8_t* data, size_t length);
     CommitResult finish(uint32_t& detail);
     CleanupResult finalizeCommit();
@@ -40,6 +41,7 @@ private:
     bool mounted_ = false;
     bool active_ = false;
     bool replacementPending_ = false;
+    bool spike_ = false;
     uint8_t slot_ = 0xff;
     notua::transfer::Crc32 crc_;
 };

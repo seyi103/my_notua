@@ -18,6 +18,9 @@
 #include "core/storage/imageCatalog.h"
 #include "core/storage/imageStorage.h"
 #include "core/storage/playlistStore.h"
+#if NOTUA_SOFTAP_HTTP_SPIKE
+#include "core/network/softApTransfer.h"
+#endif
 
 namespace {
 constexpr const char* TAG = "PHOTO_CYCLE";
@@ -386,6 +389,9 @@ void loop() {
     if (gWakePath == WakePath::buttonBle) {
         feedWatchdog();
         pollBlePeripheral();
+#if NOTUA_SOFTAP_HTTP_SPIKE
+        pollSoftApTransfer();
+#endif
         if (consumeBleApplyRequest()) {
             logInfo(TAG, "APPLY accepted; allowing notification delivery before restart");
             delay(350);
@@ -397,7 +403,11 @@ void loop() {
         const BleState currentBleState = bleState();
         if (currentBleState == BleState::initializationFailed && !gTerminal) {
             stopBleForSleep(ERROR_RETRY_INTERVAL_US, "ble_runtime_error");
-        } else if (bleSessionExpired()) {
+        } else if (bleSessionExpired()
+#if NOTUA_SOFTAP_HTTP_SPIKE
+            && !softApTransferOwnsLifecycle()
+#endif
+        ) {
             logInfo(TAG, "BLE inactivity timeout: state=%s", bleStateName(currentBleState));
             stopBleForSleep(SLEEP_INTERVAL_US, "ble_timeout");
         }
