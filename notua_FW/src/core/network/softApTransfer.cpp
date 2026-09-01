@@ -8,6 +8,7 @@
 #include "core/storage/imageCatalog.h"
 #include "core/storage/playlistStore.h"
 #include "core/storage/transferSession.h"
+#include "core/network/httpRequestParser.h"
 
 namespace {
 constexpr char PASSWORD[] = "notua-dev-2026"; // Development only; not a production secret.
@@ -73,13 +74,18 @@ bool readLine(String& line, uint32_t timeoutMs = 3000) {
 void acceptRequest() {
   String line;
   if (!readLine(line)) { fail(400, "request-line"); return; }
+  logInfo("SOFTAP", "HTTP request line: %s", line.c_str());
   if (line == "GET /health HTTP/1.1") {
     while (readLine(line) && line.length()) {}
     reply(200, "{\"ok\":true}"); client.stop(); return;
   }
-  int slot = -1;
-  if (line.startsWith("PUT /images/") && line.endsWith(" HTTP/1.1"))
-    slot = line.substring(12, line.length() - 9).toInt();
+  notua::http::UploadRequest request{};
+  const auto parsed = notua::http::parseUploadRequestLine(line.c_str(), line.length(),
+      notua::storage::MAX_IMAGES, request);
+  if (parsed != notua::http::UploadRequestResult::ok) {
+    fail(400, notua::http::uploadRequestError(parsed)); return;
+  }
+  const uint8_t slot = request.slot;
   size_t length = 0; bool haveLength = false, haveCrc = false;
   while (readLine(line) && line.length()) {
     const int colon = line.indexOf(':');
@@ -88,7 +94,6 @@ void acceptRequest() {
     if (name == "content-length") { length = strtoul(value.c_str(), nullptr, 10); haveLength = true; }
     if (name == "x-notua-crc32") { expectedCrc = strtoul(value.c_str(), nullptr, 16); haveCrc = true; }
   }
-  if (slot < 0 || slot >= notua::storage::MAX_IMAGES) { fail(400, "slot"); return; }
   if (!haveLength || length != IMAGE_BYTES) { fail(411, "content-length"); return; }
   if (!haveCrc) { fail(400, "crc-header"); return; }
   const int candidate = unusedCandidate();
