@@ -1,24 +1,40 @@
 import 'package:flutter/material.dart';
 
+import '../state/playlist_models.dart';
+
 class PhotoPlaceholder extends StatelessWidget {
-  const PhotoPlaceholder({super.key, required this.color, this.parameters, this.radius = 20});
+  const PhotoPlaceholder({
+    super.key,
+    required this.color,
+    this.parameters = const PhotoEditParameters(),
+    this.radius = 20,
+  });
   final int color;
-  final dynamic parameters;
+  final PhotoEditParameters parameters;
   final double radius;
 
   @override
   Widget build(BuildContext context) {
-    final brightness = (parameters?.brightness as double? ?? 0) / 120;
-    final turns = parameters?.quarterTurns as int? ?? 0;
+    final brightness = parameters.brightness * 255 / 60;
+    final contrast = parameters.contrast;
+    final saturation = parameters.saturation;
+    final turns = parameters.quarterTurns;
+    final inverseSaturation = 1 - saturation;
+    final red = .213 * inverseSaturation;
+    final green = .715 * inverseSaturation;
+    final blue = .072 * inverseSaturation;
+    final translate = 128 * (1 - contrast) + brightness;
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
       child: RotatedBox(
         quarterTurns: turns,
         child: ColorFiltered(
-          colorFilter: ColorFilter.mode(
-            brightness >= 0 ? Colors.white.withValues(alpha: brightness) : Colors.black.withValues(alpha: -brightness),
-            brightness >= 0 ? BlendMode.screen : BlendMode.darken,
-          ),
+          colorFilter: ColorFilter.matrix(<double>[
+            contrast * (red + saturation), contrast * green, contrast * blue, 0, translate,
+            contrast * red, contrast * (green + saturation), contrast * blue, 0, translate,
+            contrast * red, contrast * green, contrast * (blue + saturation), 0, translate,
+            0, 0, 0, 1, 0,
+          ]),
           child: CustomPaint(painter: _LandscapePainter(Color(color)), child: const SizedBox.expand()),
         ),
       ),

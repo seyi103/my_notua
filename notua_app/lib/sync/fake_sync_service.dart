@@ -2,7 +2,7 @@ import 'dart:async';
 
 import '../state/playlist_models.dart';
 
-enum SyncStage { photos, order, disconnect }
+enum SyncStage { photos, order, interval, disconnect }
 
 class SyncUpdate {
   const SyncUpdate({required this.stage, required this.progress});
@@ -21,15 +21,22 @@ class FakeSynchronizationService implements SynchronizationService {
 
   @override
   Stream<SyncUpdate> synchronize(SyncPlan plan) async* {
-    for (var i = 1; i <= 4; i++) {
+    final stages = <SyncStage>[
+      if (plan.uploads.isNotEmpty) SyncStage.photos,
+      if (plan.orderChanged || plan.deletedIds.isNotEmpty) SyncStage.order,
+      if (plan.intervalChanged) SyncStage.interval,
+      SyncStage.disconnect,
+    ];
+    for (var index = 0; index < stages.length; index++) {
       await Future<void>.delayed(delay);
-      yield SyncUpdate(stage: SyncStage.photos, progress: i * .15);
+      yield SyncUpdate(
+        stage: stages[index],
+        progress: (index + 1) / stages.length,
+      );
+      if (shouldFail && index == 0) {
+        throw const SyncException('액자와 연결이 끊어졌어요.');
+      }
     }
-    if (shouldFail) throw const SyncException('액자와 연결이 끊어졌어요.');
-    await Future<void>.delayed(delay);
-    yield const SyncUpdate(stage: SyncStage.order, progress: .82);
-    await Future<void>.delayed(delay);
-    yield const SyncUpdate(stage: SyncStage.disconnect, progress: 1);
   }
 }
 

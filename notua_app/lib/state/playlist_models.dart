@@ -63,11 +63,15 @@ class SyncPlan {
   const SyncPlan({
     required this.uploads,
     required this.deletedIds,
+    required this.targetSlideIds,
+    required this.targetIntervalMinutes,
     required this.orderChanged,
     required this.intervalChanged,
   });
   final List<SlideItem> uploads;
   final List<String> deletedIds;
+  final List<String> targetSlideIds;
+  final int targetIntervalMinutes;
   final bool orderChanged;
   final bool intervalChanged;
   int get changedImageCount => uploads.length;
@@ -79,7 +83,8 @@ class PlaylistDraft extends ChangeNotifier {
       : _slides = List.of(slides),
         _intervalMinutes = intervalMinutes,
         _snapshot = DevicePlaylistSnapshot(slides: List.of(slides), intervalMinutes: intervalMinutes),
-        _selectedId = slides.isEmpty ? null : slides.first.id;
+        _selectedId = slides.isEmpty ? null : slides.first.id,
+        _nextId = _deriveNextId(slides);
 
   factory PlaylistDraft.withMockData() => PlaylistDraft(slides: const [
         SlideItem(id: 'coast', color: 0xff7995a2),
@@ -93,7 +98,17 @@ class PlaylistDraft extends ChangeNotifier {
   int _intervalMinutes;
   DevicePlaylistSnapshot _snapshot;
   String? _selectedId;
-  int _nextId = 1;
+  int _nextId;
+
+  static int _deriveNextId(List<SlideItem> slides) {
+    var highest = 0;
+    for (final slide in slides) {
+      final match = RegExp(r'^new-(\d+)$').firstMatch(slide.id);
+      final value = match == null ? null : int.tryParse(match.group(1)!);
+      if (value != null && value > highest) highest = value;
+    }
+    return highest + 1;
+  }
 
   List<SlideItem> get slides => List.unmodifiable(_slides);
   int get intervalMinutes => _intervalMinutes;
@@ -110,7 +125,9 @@ class PlaylistDraft extends ChangeNotifier {
     return SyncPlan(
       uploads: uploads,
       deletedIds: oldIds.where((id) => !currentIds.contains(id)).toList(),
-      orderChanged: !listEquals(oldIds.where(currentIds.contains).toList(), currentIds.where(oldIds.contains).toList()),
+      targetSlideIds: currentIds,
+      targetIntervalMinutes: _intervalMinutes,
+      orderChanged: !listEquals(oldIds, currentIds),
       intervalChanged: _intervalMinutes != _snapshot.intervalMinutes,
     );
   }

@@ -16,7 +16,20 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   @override Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('사진 편집'), centerTitle: true),
     body: SafeArea(child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 560), child: ListView(padding: const EdgeInsets.all(24), children: [
-      AspectRatio(aspectRatio: 4 / 3, child: PhotoPlaceholder(color: widget.slide?.color ?? 0xff9a8881, parameters: compare ? const PhotoEditParameters(brightness: 0, contrast: 1) : value)),
+      AspectRatio(
+        aspectRatio: 4 / 3,
+        child: PhotoPlaceholder(
+          color: widget.slide?.color ?? 0xff9a8881,
+          parameters: compare
+              ? PhotoEditParameters(
+                  brightness: 0,
+                  contrast: 1,
+                  saturation: 1,
+                  quarterTurns: value.quarterTurns,
+                )
+              : value,
+        ),
+      ),
       const SizedBox(height: 22),
       Row(children: [
         Expanded(child: _Tool(icon: Icons.rotate_left, text: '왼쪽 회전', onTap: () => update(value.copyWith(quarterTurns: (value.quarterTurns + 3) % 4)))),
