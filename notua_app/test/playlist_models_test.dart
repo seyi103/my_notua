@@ -1,0 +1,129 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:notua_app/state/playlist_models.dart';
+import 'package:notua_app/sync/fake_sync_service.dart';
+
+SlideItem slide(String id) => SlideItem(id: id, color: 0xff000000);
+
+void main() {
+  group('PlaylistDraft', () {
+    test('enforces five-slide limit', () {
+      final draft = PlaylistDraft(
+        slides: [slide('1'), slide('2'), slide('3'), slide('4'), slide('5')],
+      );
+      expect(draft.add(), isFalse);
+      expect(draft.slides, hasLength(5));
+    });
+
+    test('adds, selects, and removes slides', () {
+      final draft = PlaylistDraft(slides: [slide('a')]);
+      expect(draft.add(), isTrue);
+      final added = draft.selectedId!;
+      expect(draft.syncPlan.changedImageCount, 1);
+      draft.remove(added);
+      expect(draft.slides.map((item) => item.id), ['a']);
+      expect(draft.selectedId, 'a');
+    });
+
+    test('reconstructed drafts do not reuse generated IDs', () {
+      final draft = PlaylistDraft(
+        slides: [slide('new-2'), slide('kept'), slide('new-17')],
+      );
+      expect(draft.add(), isTrue);
+      expect(draft.selectedId, 'new-18');
+      expect(draft.slides.map((item) => item.id).toSet(), hasLength(4));
+    });
+
+    test('order-only plan has desired order and no uploads', () {
+      final draft = PlaylistDraft(
+        slides: [slide('a'), slide('b'), slide('c')],
+      );
+      draft.reorder(0, 2);
+      expect(draft.syncPlan.targetSlideIds, ['b', 'c', 'a']);
+      expect(draft.syncPlan.orderChanged, isTrue);
+      expect(draft.syncPlan.uploads, isEmpty);
+    });
+
+    test('selects an existing slide only', () {
+      final draft = PlaylistDraft(slides: [slide('a'), slide('b')]);
+      draft.select('b');
+      expect(draft.selectedId, 'b');
+      draft.select('missing');
+      expect(draft.selectedId, 'b');
+    });
+
+    test('editing is an upload candidate and dirty count is accurate', () {
+      final draft = PlaylistDraft(slides: [slide('a'), slide('b')]);
+      draft.edit('b', const PhotoEditParameters(brightness: 4));
+      expect(draft.syncPlan.changedImageCount, 1);
+      expect(draft.syncPlan.uploads.single.id, 'b');
+    });
+
+    test('interval-only plan has desired interval and no uploads', () {
+      final draft = PlaylistDraft(slides: [slide('a')]);
+      draft.setInterval(10);
+      expect(draft.syncPlan.targetIntervalMinutes, 10);
+      expect(draft.syncPlan.intervalChanged, isTrue);
+      expect(draft.syncPlan.orderChanged, isFalse);
+      expect(draft.syncPlan.uploads, isEmpty);
+    });
+
+    test('deleting synchronized slide is planned separately', () {
+      final draft = PlaylistDraft(slides: [slide('a'), slide('b')]);
+      draft.remove('a');
+      expect(draft.syncPlan.deletedIds, ['a']);
+      expect(draft.syncPlan.targetSlideIds, ['b']);
+      expect(draft.syncPlan.uploads, isEmpty);
+    });
+
+    test('successful markSynchronized clears all dirty state', () {
+      final draft = PlaylistDraft(slides: [slide('a'), slide('b')]);
+      draft.reorder(0, 1);
+      draft.setInterval(30);
+      draft.edit('a', const PhotoEditParameters(saturation: 2));
+      expect(draft.syncPlan.hasChanges, isTrue);
+      draft.markSynchronized();
+      expect(draft.syncPlan.hasChanges, isFalse);
+      expect(draft.syncPlan.targetSlideIds, ['b', 'a']);
+      expect(draft.syncPlan.targetIntervalMinutes, 30);
+    });
+
+    test('failed sync preserves draft', () async {
+      final draft = PlaylistDraft(slides: [slide('a')])..add();
+      final before = draft.slides.map((item) => item.id).toList();
+      await expectLater(
+        FakeSynchronizationService(
+          shouldFail: true,
+          delay: Duration.zero,
+        ).synchronize(draft.syncPlan),
+        emitsInOrder([anything, emitsError(isA<SyncException>())]),
+      );
+      expect(draft.slides.map((item) => item.id), before);
+      expect(draft.syncPlan.changedImageCount, 1);
+    });
+  });
+
+  group('FakeSynchronizationService', () {
+    test('order-only flow skips photo stage', () async {
+      final draft = PlaylistDraft(slides: [slide('a'), slide('b')])
+        ..reorder(0, 1);
+      final updates = await FakeSynchronizationService(
+        delay: Duration.zero,
+      ).synchronize(draft.syncPlan).toList();
+      expect(updates.map((update) => update.stage), [
+        SyncStage.order,
+        SyncStage.disconnect,
+      ]);
+    });
+
+    test('interval-only flow skips photo stage', () async {
+      final draft = PlaylistDraft(slides: [slide('a')])..setInterval(10);
+      final updates = await FakeSynchronizationService(
+        delay: Duration.zero,
+      ).synchronize(draft.syncPlan).toList();
+      expect(updates.map((update) => update.stage), [
+        SyncStage.interval,
+        SyncStage.disconnect,
+      ]);
+    });
+  });
+}
