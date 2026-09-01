@@ -79,6 +79,8 @@ class SyncPlan {
 }
 
 class PlaylistDraft extends ChangeNotifier {
+  static final RegExp _generatedIdPattern = RegExp(r'^new-(\d+)$');
+
   PlaylistDraft({required List<SlideItem> slides, int intervalMinutes = 5})
       : _slides = List.of(slides),
         _intervalMinutes = intervalMinutes,
@@ -103,7 +105,7 @@ class PlaylistDraft extends ChangeNotifier {
   static int _deriveNextId(List<SlideItem> slides) {
     var highest = 0;
     for (final slide in slides) {
-      final match = RegExp(r'^new-(\d+)$').firstMatch(slide.id);
+      final match = _generatedIdPattern.firstMatch(slide.id);
       final value = match == null ? null : int.tryParse(match.group(1)!);
       if (value != null && value > highest) highest = value;
     }
