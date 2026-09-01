@@ -62,20 +62,25 @@ void main() {
 
   testWidgets('each editor slider changes the preview filter', (tester) async {
     await tester.pumpWidget(const MaterialApp(home: PhotoEditorScreen()));
+
     final sliderKeys = [
       PhotoEditorScreen.brightnessSliderKey,
       PhotoEditorScreen.contrastSliderKey,
       PhotoEditorScreen.saturationSliderKey,
     ];
+
     for (final sliderKey in sliderKeys) {
       final before = tester
           .widget<ColorFiltered>(find.byType(ColorFiltered))
           .colorFilter;
+
       await tester.drag(find.byKey(sliderKey), const Offset(45, 0));
       await tester.pump();
+
       final after = tester
           .widget<ColorFiltered>(find.byType(ColorFiltered))
           .colorFilter;
+
       expect(after, isNot(equals(before)));
     }
   });

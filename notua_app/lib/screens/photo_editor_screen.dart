@@ -6,9 +6,9 @@ import '../widgets/photo_placeholder.dart';
 class PhotoEditorScreen extends StatefulWidget {
   const PhotoEditorScreen({super.key, this.slide});
 
-  static const brightnessSliderKey = Key('brightness-slider');
-  static const contrastSliderKey = Key('contrast-slider');
-  static const saturationSliderKey = Key('saturation-slider');
+  static const brightnessSliderKey = ValueKey<String>('brightness-slider');
+  static const contrastSliderKey = ValueKey<String>('contrast-slider');
+  static const saturationSliderKey = ValueKey<String>('saturation-slider');
 
   final SlideItem? slide;
   @override
@@ -194,11 +194,13 @@ class _Adjust extends StatelessWidget {
     required this.display,
     required this.onChanged,
   });
+
   final Key sliderKey;
   final String label, display;
   final double value, min, max;
   final int divisions;
   final ValueChanged<double> onChanged;
+
   @override
   Widget build(BuildContext context) => Row(
     children: [
