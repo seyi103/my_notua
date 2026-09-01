@@ -30,12 +30,31 @@ class PhotoPlaceholder extends StatelessWidget {
         quarterTurns: turns,
         child: ColorFiltered(
           colorFilter: ColorFilter.matrix(<double>[
-            contrast * (red + saturation), contrast * green, contrast * blue, 0, translate,
-            contrast * red, contrast * (green + saturation), contrast * blue, 0, translate,
-            contrast * red, contrast * green, contrast * (blue + saturation), 0, translate,
-            0, 0, 0, 1, 0,
+            contrast * (red + saturation),
+            contrast * green,
+            contrast * blue,
+            0,
+            translate,
+            contrast * red,
+            contrast * (green + saturation),
+            contrast * blue,
+            0,
+            translate,
+            contrast * red,
+            contrast * green,
+            contrast * (blue + saturation),
+            0,
+            translate,
+            0,
+            0,
+            0,
+            1,
+            0,
           ]),
-          child: CustomPaint(painter: _LandscapePainter(Color(color)), child: const SizedBox.expand()),
+          child: CustomPaint(
+            painter: _LandscapePainter(Color(color)),
+            child: const SizedBox.expand(),
+          ),
         ),
       ),
     );
@@ -48,7 +67,11 @@ class _LandscapePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = base);
-    canvas.drawCircle(Offset(size.width * .77, size.height * .2), size.shortestSide * .1, Paint()..color = const Color(0xffffe7b1));
+    canvas.drawCircle(
+      Offset(size.width * .77, size.height * .2),
+      size.shortestSide * .1,
+      Paint()..color = const Color(0xffffe7b1),
+    );
     final back = Path()
       ..moveTo(0, size.height * .68)
       ..lineTo(size.width * .32, size.height * .3)
@@ -61,12 +84,18 @@ class _LandscapePainter extends CustomPainter {
     canvas.drawPath(back, Paint()..color = const Color(0xff536a65));
     final front = Path()
       ..moveTo(0, size.height * .76)
-      ..quadraticBezierTo(size.width * .4, size.height * .58, size.width, size.height * .82)
+      ..quadraticBezierTo(
+        size.width * .4,
+        size.height * .58,
+        size.width,
+        size.height * .82,
+      )
       ..lineTo(size.width, size.height)
       ..lineTo(0, size.height)
       ..close();
     canvas.drawPath(front, Paint()..color = const Color(0xffd7c3a2));
   }
+
   @override
   bool shouldRepaint(_LandscapePainter oldDelegate) => oldDelegate.base != base;
 }

@@ -15,7 +15,10 @@ abstract interface class SynchronizationService {
 }
 
 class FakeSynchronizationService implements SynchronizationService {
-  FakeSynchronizationService({this.shouldFail = false, this.delay = const Duration(milliseconds: 180)});
+  FakeSynchronizationService({
+    this.shouldFail = false,
+    this.delay = const Duration(milliseconds: 180),
+  });
   final bool shouldFail;
   final Duration delay;
 

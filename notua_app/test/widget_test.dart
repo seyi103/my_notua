@@ -56,10 +56,14 @@ void main() {
   testWidgets('each editor slider changes the preview filter', (tester) async {
     await tester.pumpWidget(const MaterialApp(home: PhotoEditorScreen()));
     for (var index = 0; index < 3; index++) {
-      final before = tester.widget<ColorFiltered>(find.byType(ColorFiltered)).colorFilter;
+      final before = tester
+          .widget<ColorFiltered>(find.byType(ColorFiltered))
+          .colorFilter;
       await tester.drag(find.byType(Slider).at(index), const Offset(45, 0));
       await tester.pump();
-      final after = tester.widget<ColorFiltered>(find.byType(ColorFiltered)).colorFilter;
+      final after = tester
+          .widget<ColorFiltered>(find.byType(ColorFiltered))
+          .colorFilter;
       expect(after, isNot(equals(before)));
     }
   });
@@ -73,7 +77,9 @@ void main() {
       ],
     )..reorder(0, 1);
     await tester.pumpWidget(
-      MaterialApp(home: SyncScreen(draft: draft, service: service)),
+      MaterialApp(
+        home: SyncScreen(draft: draft, service: service),
+      ),
     );
     expect(find.text('사진 전송'), findsNothing);
     expect(find.text('순서 저장'), findsOneWidget);
@@ -86,7 +92,9 @@ void main() {
     final service = ControlledSynchronizationService();
     final draft = PlaylistDraft(slides: const [])..setInterval(10);
     await tester.pumpWidget(
-      MaterialApp(home: SyncScreen(draft: draft, service: service)),
+      MaterialApp(
+        home: SyncScreen(draft: draft, service: service),
+      ),
     );
     expect(find.text('사진 전송'), findsNothing);
     expect(find.text('순서 저장'), findsNothing);
@@ -99,7 +107,9 @@ void main() {
     final service = ControlledSynchronizationService();
     final draft = PlaylistDraft(slides: const [])..add();
     await tester.pumpWidget(
-      MaterialApp(home: SyncScreen(draft: draft, service: service)),
+      MaterialApp(
+        home: SyncScreen(draft: draft, service: service),
+      ),
     );
     service.controllers.first.addError(const SyncException('실패'));
     await tester.pump();
@@ -129,7 +139,9 @@ void main() {
     await tester.pumpWidget(
       MediaQuery(
         data: const MediaQueryData(textScaler: TextScaler.linear(2)),
-        child: MaterialApp(home: SyncScreen(draft: draft, service: service)),
+        child: MaterialApp(
+          home: SyncScreen(draft: draft, service: service),
+        ),
       ),
     );
     service.controllers.single.add(

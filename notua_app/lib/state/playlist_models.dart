@@ -19,13 +19,12 @@ class PhotoEditParameters {
     double? contrast,
     double? saturation,
     int? quarterTurns,
-  }) =>
-      PhotoEditParameters(
-        brightness: brightness ?? this.brightness,
-        contrast: contrast ?? this.contrast,
-        saturation: saturation ?? this.saturation,
-        quarterTurns: quarterTurns ?? this.quarterTurns,
-      );
+  }) => PhotoEditParameters(
+    brightness: brightness ?? this.brightness,
+    contrast: contrast ?? this.contrast,
+    saturation: saturation ?? this.saturation,
+    quarterTurns: quarterTurns ?? this.quarterTurns,
+  );
 
   @override
   bool operator ==(Object other) =>
@@ -36,12 +35,17 @@ class PhotoEditParameters {
       quarterTurns == other.quarterTurns;
 
   @override
-  int get hashCode => Object.hash(brightness, contrast, saturation, quarterTurns);
+  int get hashCode =>
+      Object.hash(brightness, contrast, saturation, quarterTurns);
 }
 
 @immutable
 class SlideItem {
-  const SlideItem({required this.id, required this.color, this.edit = const PhotoEditParameters()});
+  const SlideItem({
+    required this.id,
+    required this.color,
+    this.edit = const PhotoEditParameters(),
+  });
 
   final String id;
   final int color;
@@ -53,7 +57,10 @@ class SlideItem {
 
 @immutable
 class DevicePlaylistSnapshot {
-  const DevicePlaylistSnapshot({required this.slides, required this.intervalMinutes});
+  const DevicePlaylistSnapshot({
+    required this.slides,
+    required this.intervalMinutes,
+  });
   final List<SlideItem> slides;
   final int intervalMinutes;
 }
@@ -75,25 +82,34 @@ class SyncPlan {
   final bool orderChanged;
   final bool intervalChanged;
   int get changedImageCount => uploads.length;
-  bool get hasChanges => uploads.isNotEmpty || deletedIds.isNotEmpty || orderChanged || intervalChanged;
+  bool get hasChanges =>
+      uploads.isNotEmpty ||
+      deletedIds.isNotEmpty ||
+      orderChanged ||
+      intervalChanged;
 }
 
 class PlaylistDraft extends ChangeNotifier {
   static final RegExp _generatedIdPattern = RegExp(r'^new-(\d+)$');
 
   PlaylistDraft({required List<SlideItem> slides, int intervalMinutes = 5})
-      : _slides = List.of(slides),
-        _intervalMinutes = intervalMinutes,
-        _snapshot = DevicePlaylistSnapshot(slides: List.of(slides), intervalMinutes: intervalMinutes),
-        _selectedId = slides.isEmpty ? null : slides.first.id,
-        _nextId = _deriveNextId(slides);
+    : _slides = List.of(slides),
+      _intervalMinutes = intervalMinutes,
+      _snapshot = DevicePlaylistSnapshot(
+        slides: List.of(slides),
+        intervalMinutes: intervalMinutes,
+      ),
+      _selectedId = slides.isEmpty ? null : slides.first.id,
+      _nextId = _deriveNextId(slides);
 
-  factory PlaylistDraft.withMockData() => PlaylistDraft(slides: const [
-        SlideItem(id: 'coast', color: 0xff7995a2),
-        SlideItem(id: 'street', color: 0xffb88968),
-        SlideItem(id: 'family', color: 0xffb5a28b),
-        SlideItem(id: 'lake', color: 0xff6f8582),
-      ]);
+  factory PlaylistDraft.withMockData() => PlaylistDraft(
+    slides: const [
+      SlideItem(id: 'coast', color: 0xff7995a2),
+      SlideItem(id: 'street', color: 0xffb88968),
+      SlideItem(id: 'family', color: 0xffb5a28b),
+      SlideItem(id: 'lake', color: 0xff6f8582),
+    ],
+  );
 
   static const maxSlides = 5;
   List<SlideItem> _slides;
@@ -115,7 +131,8 @@ class PlaylistDraft extends ChangeNotifier {
   List<SlideItem> get slides => List.unmodifiable(_slides);
   int get intervalMinutes => _intervalMinutes;
   String? get selectedId => _selectedId;
-  SlideItem? get selected => _slides.where((item) => item.id == _selectedId).firstOrNull;
+  SlideItem? get selected =>
+      _slides.where((item) => item.id == _selectedId).firstOrNull;
   SyncPlan get syncPlan {
     final oldById = {for (final slide in _snapshot.slides) slide.id: slide};
     final currentIds = _slides.map((e) => e.id).toList();
@@ -148,7 +165,9 @@ class PlaylistDraft extends ChangeNotifier {
     if (index < 0) return;
     _slides.removeAt(index);
     if (_selectedId == id) {
-      _selectedId = _slides.isEmpty ? null : _slides[index.clamp(0, _slides.length - 1)].id;
+      _selectedId = _slides.isEmpty
+          ? null
+          : _slides[index.clamp(0, _slides.length - 1)].id;
     }
     notifyListeners();
   }
@@ -161,7 +180,12 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void reorder(int oldIndex, int newIndex) {
-    if (oldIndex == newIndex || oldIndex < 0 || newIndex < 0 || oldIndex >= _slides.length || newIndex >= _slides.length) return;
+    if (oldIndex == newIndex ||
+        oldIndex < 0 ||
+        newIndex < 0 ||
+        oldIndex >= _slides.length ||
+        newIndex >= _slides.length)
+      return;
     final item = _slides.removeAt(oldIndex);
     _slides.insert(newIndex, item);
     notifyListeners();
@@ -181,7 +205,10 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void markSynchronized() {
-    _snapshot = DevicePlaylistSnapshot(slides: List.of(_slides), intervalMinutes: _intervalMinutes);
+    _snapshot = DevicePlaylistSnapshot(
+      slides: List.of(_slides),
+      intervalMinutes: _intervalMinutes,
+    );
     notifyListeners();
   }
 }

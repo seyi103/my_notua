@@ -34,9 +34,7 @@ void main() {
     });
 
     test('order-only plan has desired order and no uploads', () {
-      final draft = PlaylistDraft(
-        slides: [slide('a'), slide('b'), slide('c')],
-      );
+      final draft = PlaylistDraft(slides: [slide('a'), slide('b'), slide('c')]);
       draft.reorder(0, 2);
       expect(draft.syncPlan.targetSlideIds, ['b', 'c', 'a']);
       expect(draft.syncPlan.orderChanged, isTrue);

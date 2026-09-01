@@ -18,7 +18,8 @@ class NotuaApp extends StatelessWidget {
   Widget build(BuildContext context) {
     const ink = Color(0xff203f60);
     final routes = <String, WidgetBuilder>{};
-    if (kDebugMode) routes['/developer/transfer'] = (_) => const TransferScreen();
+    if (kDebugMode)
+      routes['/developer/transfer'] = (_) => const TransferScreen();
     return MaterialApp(
       title: 'Notua',
       debugShowCheckedModeBanner: false,
@@ -30,7 +31,9 @@ class NotuaApp extends StatelessWidget {
           primary: ink,
           surface: const Color(0xfffffdf9),
         ),
-        textTheme: const TextTheme(bodyMedium: TextStyle(color: Color(0xff282a2c))),
+        textTheme: const TextTheme(
+          bodyMedium: TextStyle(color: Color(0xff282a2c)),
+        ),
         sliderTheme: const SliderThemeData(trackHeight: 3),
       ),
       routes: routes,
