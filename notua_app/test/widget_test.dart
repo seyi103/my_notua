@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:notua_app/main.dart';
@@ -8,22 +6,31 @@ import 'package:notua_app/screens/sync_screen.dart';
 import 'package:notua_app/state/playlist_models.dart';
 import 'package:notua_app/sync/fake_sync_service.dart';
 
-class ControlledSynchronizationService implements SynchronizationService {
-  final List<StreamController<SyncUpdate>> controllers = [];
+class EmptySynchronizationService implements SynchronizationService {
+  @override
+  Stream<SyncUpdate> synchronize(SyncPlan plan) =>
+      const Stream<SyncUpdate>.empty();
+}
 
-  int get attemptCount => controllers.length;
+class ImmediateSynchronizationService implements SynchronizationService {
+  @override
+  Stream<SyncUpdate> synchronize(SyncPlan plan) => Stream<SyncUpdate>.value(
+    const SyncUpdate(stage: SyncStage.disconnect, progress: 1),
+  );
+}
+
+class RetrySynchronizationService implements SynchronizationService {
+  int attemptCount = 0;
 
   @override
   Stream<SyncUpdate> synchronize(SyncPlan plan) {
-    final controller = StreamController<SyncUpdate>();
-    controllers.add(controller);
-    return controller.stream;
-  }
-
-  Future<void> dispose() async {
-    for (final controller in controllers) {
-      if (!controller.isClosed) await controller.close();
+    attemptCount++;
+    if (attemptCount == 1) {
+      return Stream<SyncUpdate>.error(const SyncException('실패'));
     }
+    return Stream<SyncUpdate>.value(
+      const SyncUpdate(stage: SyncStage.disconnect, progress: 1),
+    );
   }
 }
 
@@ -69,7 +76,6 @@ void main() {
   });
 
   testWidgets('order-only sync shows accurate stages', (tester) async {
-    final service = ControlledSynchronizationService();
     final draft = PlaylistDraft(
       slides: const [
         SlideItem(id: 'a', color: 0xff000000),
@@ -78,53 +84,42 @@ void main() {
     )..reorder(0, 1);
     await tester.pumpWidget(
       MaterialApp(
-        home: SyncScreen(draft: draft, service: service),
+        home: SyncScreen(draft: draft, service: EmptySynchronizationService()),
       ),
     );
     expect(find.text('사진 전송'), findsNothing);
     expect(find.text('순서 저장'), findsOneWidget);
     expect(find.text('연결 종료'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox());
-    await service.dispose();
   });
 
   testWidgets('interval-only sync shows accurate stages', (tester) async {
-    final service = ControlledSynchronizationService();
     final draft = PlaylistDraft(slides: const [])..setInterval(10);
     await tester.pumpWidget(
       MaterialApp(
-        home: SyncScreen(draft: draft, service: service),
+        home: SyncScreen(draft: draft, service: EmptySynchronizationService()),
       ),
     );
     expect(find.text('사진 전송'), findsNothing);
     expect(find.text('순서 저장'), findsNothing);
     expect(find.text('전환 간격 저장'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox());
-    await service.dispose();
   });
 
   testWidgets('sync failure can retry and then complete', (tester) async {
-    final service = ControlledSynchronizationService();
+    final service = RetrySynchronizationService();
     final draft = PlaylistDraft(slides: const [])..add();
     await tester.pumpWidget(
       MaterialApp(
         home: SyncScreen(draft: draft, service: service),
       ),
     );
-    service.controllers.first.addError(const SyncException('실패'));
     await tester.pump();
     expect(find.text('다시 시도'), findsOneWidget);
     await tester.tap(find.text('다시 시도'));
     await tester.pump();
     expect(service.attemptCount, 2);
-    service.controllers.last.add(
-      const SyncUpdate(stage: SyncStage.disconnect, progress: 1),
-    );
     await tester.pump();
     expect(find.text('액자에 적용했어요'), findsOneWidget);
     expect(draft.syncPlan.hasChanges, isFalse);
-    await tester.pumpWidget(const SizedBox());
-    await service.dispose();
   });
 
   testWidgets('completion remains reachable on a short enlarged screen', (
@@ -134,23 +129,20 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    final service = ControlledSynchronizationService();
     final draft = PlaylistDraft(slides: const [])..setInterval(10);
     await tester.pumpWidget(
       MediaQuery(
         data: const MediaQueryData(textScaler: TextScaler.linear(2)),
         child: MaterialApp(
-          home: SyncScreen(draft: draft, service: service),
+          home: SyncScreen(
+            draft: draft,
+            service: ImmediateSynchronizationService(),
+          ),
         ),
       ),
-    );
-    service.controllers.single.add(
-      const SyncUpdate(stage: SyncStage.disconnect, progress: 1),
     );
     await tester.pump();
     await tester.scrollUntilVisible(find.text('완료'), 100);
     expect(find.text('완료'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox());
-    await service.dispose();
   });
 }
