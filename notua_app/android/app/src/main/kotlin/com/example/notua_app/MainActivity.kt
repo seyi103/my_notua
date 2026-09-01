@@ -8,8 +8,11 @@ import android.bluetooth.le.ScanResult
 import android.content.*
 import android.content.pm.PackageManager
 import android.net.*
+import android.net.wifi.WifiInfo
 import android.net.wifi.WifiNetworkSpecifier
+import android.net.wifi.WifiManager
 import android.os.*
+import android.util.Log
 import androidx.core.app.ActivityCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -42,6 +45,7 @@ class MainActivity : FlutterActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private var pendingConnect: OnceResult? = null
     private var scanCallback: ScanCallback? = null
+    private val logTag = "NotuaSoftAP"
 
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
@@ -150,32 +154,94 @@ class MainActivity : FlutterActivity() {
         val result=pendingConnect; pendingConnect=null; runOnUiThread { result?.error("ble",message) }
     }
 
+    private fun emitStatus(message: String) {
+        Log.i(logTag, message)
+        runOnUiThread { sink?.success(mapOf("type" to "status", "message" to message)) }
+    }
+
+    private fun normalizedSsid(value: String?): String? {
+        if (value == null || value == WifiManager.UNKNOWN_SSID) return null
+        return value.removeSurrounding("\"")
+    }
+
+    private fun findExistingNotuaNetwork(cm: ConnectivityManager, expectedSsid: String): Network? {
+        return cm.allNetworks.firstOrNull { candidate ->
+            val capabilities = cm.getNetworkCapabilities(candidate) ?: return@firstOrNull false
+            if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return@firstOrNull false
+            val wifiInfo = capabilities.transportInfo as? WifiInfo ?: return@firstOrNull false
+            normalizedSsid(wifiInfo.ssid) == expectedSsid
+        }
+    }
+
     private fun upload(path: String, result: OnceResult) = Thread {
         val file = File(path)
         if (file.length() != 1_920_000L) { runOnUiThread { result.error("size", "File must be exactly 1,920,000 bytes") }; return@Thread }
         val crc = CRC32(); FileInputStream(file).use { input -> val b=ByteArray(64*1024); while (true) { val n=input.read(b); if(n<0) break; crc.update(b,0,n) } }
         val cm = getSystemService(ConnectivityManager::class.java)
+        network = null
         val info = getSharedPreferences("notua", MODE_PRIVATE)
         val ssid=info.getString("ssid", null)
         val slot=info.getInt("candidateSlot", -1)
         if (ssid == null || slot < 0) { runOnUiThread { result.error("connect", "Connect to Notua first") }; return@Thread }
+        val existing = try { findExistingNotuaNetwork(cm, ssid) }
+        catch (e: SecurityException) {
+            runOnUiThread { result.error("wifi", "Unable to inspect Wi-Fi networks: ${e.message}") }
+            return@Thread
+        }
+        if (existing != null) {
+            network = existing
+            emitStatus("Existing Notua network reused: $ssid (app-owned=false)")
+            emitStatus("Notua network available: $ssid (app-owned=false)")
+            verifyAndUpload(existing, file, slot, crc.value, result, cm, null)
+            return@Thread
+        }
         val spec=WifiNetworkSpecifier.Builder().setSsid(ssid).setWpa2Passphrase(info.getString("password", "")!!).build()
         val request=NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).setNetworkSpecifier(spec).build()
-        callback=object: ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(n: Network) { handler.removeCallbacksAndMessages("wifi"); network=n; performUpload(n,file,slot,crc.value,result,cm,this) }
-            override fun onUnavailable() { cleanupNetwork(cm); runOnUiThread { result.error("wifi", "Notua network unavailable") } }
+        val acceptedNetwork = AtomicBoolean(false)
+        val requestedCallback=object: ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(n: Network) {
+                if (!acceptedNetwork.compareAndSet(false, true)) return
+                handler.removeCallbacksAndMessages("wifi")
+                network=n
+                emitStatus("Notua network available: $ssid (app-owned=true)")
+                verifyAndUpload(n,file,slot,crc.value,result,cm,this)
+            }
+            override fun onUnavailable() {
+                if (acceptedNetwork.get()) {
+                    Log.w(logTag, "Ignoring unavailable callback after a Notua network was selected")
+                    return
+                }
+                emitStatus("Automatic Notua network request unavailable")
+                cleanupNetwork(cm, this)
+                runOnUiThread { result.error("wifi", "Notua network unavailable") }
+            }
+            override fun onLost(lost: Network) {
+                Log.w(logTag, "Requested network changed state; deferring cleanup to active operation")
+            }
         }
+        callback=requestedCallback
         runOnUiThread {
             try {
-                cm.requestNetwork(request, callback!!)
-                handler.postAtTime({ if(network==null){ cleanupNetwork(cm); result.error("wifi","Notua network request timed out") } }, "wifi", SystemClock.uptimeMillis()+20_000)
-            } catch (e: SecurityException) { cleanupNetwork(cm); result.error("wifi", "Wi-Fi permission denied: ${e.message}") }
+                emitStatus("Automatic Notua network requested: $ssid")
+                cm.requestNetwork(request, requestedCallback)
+                handler.postAtTime({ if(network==null){ cleanupNetwork(cm, requestedCallback); result.error("wifi","Notua network request timed out") } }, "wifi", SystemClock.uptimeMillis()+20_000)
+            } catch (e: SecurityException) { cleanupNetwork(cm, requestedCallback); result.error("wifi", "Wi-Fi permission denied: ${e.message}") }
         }
     }.start()
 
-    private fun performUpload(n: Network, file: File, slot:Int, crc:Long, result:OnceResult, cm:ConnectivityManager, cb:ConnectivityManager.NetworkCallback)=Thread {
+    private fun verifyAndUpload(n: Network, file: File, slot:Int, crc:Long, result:OnceResult, cm:ConnectivityManager, ownedCallback:ConnectivityManager.NetworkCallback?)=Thread {
+        var healthPending = true
         try {
             val prefs=getSharedPreferences("notua", MODE_PRIVATE); val ip=prefs.getString("ip","192.168.4.1"); val port=prefs.getInt("port",80)
+            val health=n.openConnection(java.net.URL("http://$ip:$port/health")) as HttpURLConnection
+            activeConnection=health
+            health.requestMethod="GET"; health.connectTimeout=5_000; health.readTimeout=5_000
+            val healthCode=health.responseCode
+            health.disconnect(); activeConnection=null
+            if (healthCode !in 200..299) throw IOException("Health check returned HTTP $healthCode")
+            emitStatus("Notua health check passed (HTTP $healthCode)")
+            healthPending = false
+            emitStatus("Upload started for candidate slot $slot")
             val connection=n.openConnection(java.net.URL("http://$ip:$port/images/$slot")) as HttpURLConnection
             activeConnection=connection; connection.requestMethod="PUT"; connection.doOutput=true; connection.setFixedLengthStreamingMode(file.length()); connection.setRequestProperty("X-Notua-CRC32", "%08x".format(crc)); connection.connectTimeout=10000; connection.readTimeout=30000
             val start=SystemClock.elapsedRealtime(); var sent=0L; var prior=start; var priorBytes=0L
@@ -183,14 +249,28 @@ class MainActivity : FlutterActivity() {
             val finished=SystemClock.elapsedRealtime(); val average=sent*1000.0/(finished-start)/1024
             runOnUiThread { sink?.success(mapOf("sent" to sent,"total" to file.length(),"instantKiBs" to average,"averageKiBs" to average,"elapsedMs" to finished-start)) }
             val body=(if(connection.responseCode<400) connection.inputStream else connection.errorStream).bufferedReader().readText()
+            emitStatus("Upload completed (HTTP ${connection.responseCode})")
             runOnUiThread { result.success(mapOf("httpStatus" to connection.responseCode,"body" to body,"crc32" to "%08x".format(crc))) }
-        } catch(e:Exception){ runOnUiThread { result.error("upload",e.message ?: "Upload failed") } }
-        finally { activeConnection=null; cleanupNetwork(cm) }
+        } catch(e:Exception){
+            val message = e.message ?: "Upload failed"
+            val displayMessage = if (message.contains("cleartext", ignoreCase = true))
+                "Android blocked cleartext HTTP. Install a debug build with the Notua SoftAP cleartext policy enabled."
+            else message
+            emitStatus(if (healthPending) "Notua health check failed: $displayMessage" else "Upload failed: $displayMessage")
+            runOnUiThread { result.error("upload", displayMessage) }
+        }
+        finally { activeConnection=null; cleanupNetwork(cm, ownedCallback) }
     }.start()
-    private fun cleanupNetwork(cm: ConnectivityManager = getSystemService(ConnectivityManager::class.java)) {
+    private fun cleanupNetwork(cm: ConnectivityManager = getSystemService(ConnectivityManager::class.java), ownedCallback: ConnectivityManager.NetworkCallback? = callback) {
         handler.removeCallbacksAndMessages("wifi"); activeConnection?.disconnect(); activeConnection=null
-        callback?.let { try { cm.unregisterNetworkCallback(it) } catch (_:Exception) {} }
-        callback=null; network=null
+        if (ownedCallback != null) {
+            try { cm.unregisterNetworkCallback(ownedCallback) } catch (_:Exception) {}
+            if (callback === ownedCallback) callback=null
+            emitStatus("Network cleanup complete (app-owned=true; callback unregistered)")
+        } else {
+            emitStatus("Network cleanup complete (app-owned=false; existing Wi-Fi retained)")
+        }
+        network=null
     }
     private fun cleanupAll() {
         pendingPicker?.error("cancelled","Cancelled"); pendingPicker=null

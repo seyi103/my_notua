@@ -8,7 +8,7 @@ class TransferScreen extends StatefulWidget { const TransferScreen({super.key});
 class _TransferScreenState extends State<TransferScreen> {
  static const method=MethodChannel('notua/softap'), progress=EventChannel('notua/softap_progress');
  String? path; int? candidateSlot; String status='Select an existing 1,920,000-byte Y8 BIN (photo conversion is out of scope)'; double fraction=0,instant=0,average=0; int elapsed=0; StreamSubscription? sub;
- @override void initState(){super.initState();sub=progress.receiveBroadcastStream().listen((dynamic e){final m=Map<String,dynamic>.from(e);if(mounted)setState((){fraction=m['sent']/m['total'];instant=m['instantKiBs'];average=m['averageKiBs'];elapsed=m['elapsedMs'];});});}
+ @override void initState(){super.initState();sub=progress.receiveBroadcastStream().listen((dynamic e){final m=Map<String,dynamic>.from(e);if(!mounted)return;setState((){if(m['type']=='status'){status=m['message'] as String;}else{fraction=m['sent']/m['total'];instant=m['instantKiBs'];average=m['averageKiBs'];elapsed=m['elapsedMs'];}});});}
  @override void dispose(){sub?.cancel();method.invokeMethod('cancel');super.dispose();}
  Future<void> select()async{try{final p=await method.invokeMethod<String>('selectFile');if(mounted)setState((){path=p;status=p??'No file';});}catch(e){if(mounted)setState(()=>status='$e');}}
  Future<void> connect()async{try{final raw=await method.invokeMethod<String>('connect');final info=jsonDecode(raw!);final slot=info['candidateSlot'] as int;if(mounted)setState((){candidateSlot=slot>=0?slot:null;status=slot>=0?'Notua AP ready; automatically selected unused candidate slot $slot':'All five slots are active; spike upload refused';});}catch(e){if(mounted)setState(()=>status='$e');}}
