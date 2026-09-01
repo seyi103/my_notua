@@ -11,6 +11,14 @@ class SoftApContract(unittest.TestCase):
   self.assertLess(poll.index('gPriorityControlQueue'),poll.index('xQueueReceive(gLifecycleQueue'))
  def test_release_is_gated(self):
   self.assertIn('#if NOTUA_SOFTAP_HTTP_SPIKE\nconstexpr const char* SOFTAP_INFO_UUID',BLE); self.assertIn('build_src_filter = +<*> -<core/network/softApTransfer.cpp>',PIO)
+ def test_platformio_environment_separation(self):
+  dev=PIO.split('[env:esp32-s3-dev]',1)[1].split('[env:esp32-s3-softap-test]',1)[0]
+  spike=PIO.split('[env:esp32-s3-softap-test]',1)[1].split('[env:esp32-s3-release]',1)[0]
+  release=PIO.split('[env:esp32-s3-release]',1)[1]
+  self.assertIn('-DNOTUA_ALLOW_DEEP_SLEEP=0',dev); self.assertIn('-DNOTUA_SOFTAP_HTTP_SPIKE=0',dev)
+  self.assertIn('-DNOTUA_ALLOW_DEEP_SLEEP=1',spike); self.assertIn('-DNOTUA_SOFTAP_HTTP_SPIKE=1',spike)
+  self.assertIn('build_src_filter = +<*>',spike)
+  self.assertIn('-DNOTUA_SOFTAP_HTTP_SPIKE=0',release); self.assertIn('-<core/network/softApTransfer.cpp>',release)
  def test_gate_precedes_storage_recovery(self):
   request=AP.split('void acceptRequest()',1)[1].split('\n}',1)[0]; self.assertLess(request.index('acquireTransferSession'),request.index('storage.startSpike'))
   startup=AP.split('void pollSoftApTransfer()',1)[1].split('if (!running)',1)[0]; self.assertNotIn('storage.begin',startup)
