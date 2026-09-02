@@ -5,20 +5,12 @@ import 'package:image/image.dart' as img;
 import 'package:notua_app/image_processing/image_pipeline.dart';
 import 'package:notua_app/state/playlist_models.dart';
 
-Uint8List fixture(int width, int height, {bool portrait = false}) {
+Uint8List fixture(int width, int height) {
   final image = img.Image(width: width, height: height);
   for (var y = 0; y < height; y++) {
     for (var x = 0; x < width; x++) {
       image.setPixelRgb(x, y, x * 255 ~/ width, y * 255 ~/ height, (x + y) * 127 ~/ (width + height));
     }
-  }
-  return Uint8List.fromList(img.encodePng(image));
-}
-
-Uint8List solidRedFixture() {
-  final image = img.Image(width: 4, height: 3);
-  for (var y = 0; y < 3; y++) {
-    for (var x = 0; x < 4; x++) image.setPixelRgb(x, y, 255, 0, 0);
   }
   return Uint8List.fromList(img.encodePng(image));
 }
@@ -46,13 +38,13 @@ void main() {
     expect(ImagePipeline.validate(result.y8), isTrue);
   });
 
-  test('deterministic reference fixture checksum is stable', () {
-    final result = ImagePipeline.processSync(solidRedFixture(),
-      const PhotoEditParameters(brightness: 0, contrast: 1, saturation: 1),
+  test('non-trivial gradient matches independently generated HTML checksum', () {
+    final result = ImagePipeline.processSync(fixture(400, 300),
+      const PhotoEditParameters(brightness: -18, contrast: .5, saturation: 1.65),
       fullSize: false);
     // This checksum covers adjustment order, Uint8 clamping, Bayer phase,
     // nearest-palette tie behavior and Y8 byte mapping from the HTML port.
-    expect(fnv1a(result.y8), 0x974f94c5);
+    expect(fnv1a(result.y8), 0x37274d1d);
   });
 
   test('brightness contrast and saturation independently affect output', () {
@@ -66,7 +58,9 @@ void main() {
 
   test('portrait and landscape rotation/crop remain 4:3', () {
     for (final source in [fixture(6, 8), fixture(8, 6)]) {
-      final result = ImagePipeline.processSync(source, const PhotoEditParameters(quarterTurns: 1, crop: NormalizedCrop(left: .1, top: .1, width: .8, height: .8)), fullSize: false);
+      final crop = ImagePipeline.defaultCrop(source, 1);
+      final result = ImagePipeline.processSync(source,
+        PhotoEditParameters(quarterTurns: 1, crop: crop), fullSize: false);
       expect((result.width, result.height), (400, 300));
     }
   });

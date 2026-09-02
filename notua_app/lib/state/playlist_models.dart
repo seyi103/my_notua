@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter/foundation.dart';
 
 @immutable
@@ -73,23 +71,23 @@ class SlideItem {
     required this.color,
     this.edit = const PhotoEditParameters(),
     this.sourceName,
-    this.sourceBytes,
-    this.previewPng,
-    this.y8Bytes,
+    this.sourcePath,
+    this.previewPath,
+    this.binPath,
   });
 
   final String id;
   final int color;
   final PhotoEditParameters edit;
   final String? sourceName;
-  final Uint8List? sourceBytes;
-  final Uint8List? previewPng;
-  final Uint8List? y8Bytes;
+  final String? sourcePath;
+  final String? previewPath;
+  final String? binPath;
 
-  SlideItem copyWith({PhotoEditParameters? edit, Uint8List? previewPng, Uint8List? y8Bytes}) =>
+  SlideItem copyWith({PhotoEditParameters? edit, String? previewPath, String? binPath}) =>
       SlideItem(id: id, color: color, edit: edit ?? this.edit, sourceName: sourceName,
-        sourceBytes: sourceBytes, previewPng: previewPng ?? this.previewPng,
-        y8Bytes: y8Bytes ?? this.y8Bytes);
+        sourcePath: sourcePath, previewPath: previewPath ?? this.previewPath,
+        binPath: binPath ?? this.binPath);
 }
 
 @immutable
@@ -205,13 +203,18 @@ class PlaylistDraft extends ChangeNotifier {
     return true;
   }
 
-  bool addPhoto({required String name, required Uint8List sourceBytes,
-      required PhotoEditParameters edit, required Uint8List previewPng,
-      required Uint8List y8Bytes}) {
+  String? reservePhotoId() {
+    if (_pendingSyncPlan != null || _slides.length >= maxSlides) return null;
+    return 'new-${_nextId++}';
+  }
+
+  bool addPhoto({required String id, required String name, required String sourcePath,
+      required PhotoEditParameters edit, required String previewPath,
+      required String binPath}) {
     if (_pendingSyncPlan != null || _slides.length >= maxSlides) return false;
-    final item = SlideItem(id: 'new-${_nextId++}', color: 0xff9a8881,
-      sourceName: name, sourceBytes: sourceBytes, edit: edit,
-      previewPng: previewPng, y8Bytes: y8Bytes);
+    final item = SlideItem(id: id, color: 0xff9a8881,
+      sourceName: name, sourcePath: sourcePath, edit: edit,
+      previewPath: previewPath, binPath: binPath);
     _slides.add(item);
     _selectedId = item.id;
     notifyListeners();
@@ -253,11 +256,11 @@ class PlaylistDraft extends ChangeNotifier {
     notifyListeners();
   }
 
-  void edit(String id, PhotoEditParameters edit, {Uint8List? previewPng, Uint8List? y8Bytes}) {
+  void edit(String id, PhotoEditParameters edit, {String? previewPath, String? binPath}) {
     if (_pendingSyncPlan != null) return;
     final index = _slides.indexWhere((item) => item.id == id);
     if (index < 0) return;
-    _slides[index] = _slides[index].copyWith(edit: edit, previewPng: previewPng, y8Bytes: y8Bytes);
+    _slides[index] = _slides[index].copyWith(edit: edit, previewPath: previewPath, binPath: binPath);
     notifyListeners();
   }
 

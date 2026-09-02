@@ -1,5 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
+import '../image_processing/photo_cache.dart';
+import '../image_processing/image_pipeline.dart';
 import '../state/playlist_models.dart';
 import '../sync/fake_sync_service.dart';
 import '../widgets/photo_placeholder.dart';
@@ -8,10 +12,12 @@ import 'photo_editor_screen.dart';
 import 'sync_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, required this.draft, required this.syncService, this.photoPicker});
+  const HomeScreen({super.key, required this.draft, required this.syncService, this.photoPicker, this.photoCache, this.imagePipeline});
   final PlaylistDraft draft;
   final SynchronizationService syncService;
   final PhotoPickerService? photoPicker;
+  final PhotoCache? photoCache;
+  final ImagePipeline? imagePipeline;
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -45,6 +51,9 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     SelectedPhoto? photo;
+    final cache = widget.photoCache ?? TemporaryPhotoCache();
+    String? sourcePath;
+    String? reservedId;
     if (slide == null) {
       try {
         photo = await (widget.photoPicker ?? SystemPhotoPickerService()).pickPhoto();
@@ -53,19 +62,39 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
       if (photo == null || !mounted) return;
+      reservedId = widget.draft.reservePhotoId();
+      if (reservedId == null) return;
+      sourcePath = await cache.storeSource(
+        reservedId,
+        photo.name.split('.').last.toLowerCase(),
+        photo.bytes,
+      );
     }
     final result = await Navigator.push<PhotoEditorResult>(
       context,
-      MaterialPageRoute(builder: (_) => PhotoEditorScreen(slide: slide, photo: photo)),
+      MaterialPageRoute(builder: (_) => PhotoEditorScreen(slide: slide, sourcePath: sourcePath, photo: photo, pipeline: widget.imagePipeline)),
     );
-    if (result == null) return;
+    if (result == null) {
+      if (sourcePath != null) await cache.deletePaths([sourcePath]);
+      return;
+    }
+    if (slide?.previewPath case final oldPreview?) {
+      await FileImage(File(oldPreview)).evict();
+    }
+    final outputs = await cache.replaceOutputs(
+      slide?.id ?? reservedId!,
+      result.processed.previewPng,
+      result.processed.y8,
+      oldPreviewPath: slide?.previewPath,
+      oldBinPath: slide?.binPath,
+    );
     if (slide == null) {
-      widget.draft.addPhoto(name: photo!.name, sourceBytes: photo.bytes,
-        edit: result.edit, previewPng: result.processed.previewPng,
-        y8Bytes: result.processed.y8);
+      widget.draft.addPhoto(id: reservedId!, name: photo!.name,
+        sourcePath: sourcePath!, edit: result.edit,
+        previewPath: outputs.previewPath, binPath: outputs.binPath);
     } else {
       widget.draft.edit(slide.id, result.edit,
-        previewPng: result.processed.previewPng, y8Bytes: result.processed.y8);
+        previewPath: outputs.previewPath, binPath: outputs.binPath);
     }
   }
 
@@ -131,7 +160,13 @@ class _HomeScreenState extends State<HomeScreen> {
                             _CircleAction(
                               icon: Icons.delete_outline,
                               label: '사진 삭제',
-                              onTap: () => widget.draft.remove(selected.id),
+                              onTap: () async {
+                                widget.draft.remove(selected.id);
+                                if (selected.previewPath case final preview?) {
+                                  await FileImage(File(preview)).evict();
+                                }
+                                await cache.deletePaths([selected.sourcePath, selected.previewPath, selected.binPath]);
+                              },
                             ),
                           ],
                         ),
@@ -287,9 +322,10 @@ class _SlidePhoto extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ClipRRect(
     borderRadius: BorderRadius.circular(radius),
-    child: slide.previewPng == null
+    child: slide.previewPath == null
       ? PhotoPlaceholder(color: slide.color, radius: radius)
-      : Image.memory(slide.previewPng!, fit: BoxFit.cover, gaplessPlayback: true),
+      : Image.file(File(slide.previewPath!), fit: BoxFit.cover, gaplessPlayback: true,
+          errorBuilder: (_, _, _) => const Center(child: Icon(Icons.broken_image_outlined))),
   );
 }
 

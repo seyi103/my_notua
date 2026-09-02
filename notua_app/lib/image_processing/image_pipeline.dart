@@ -1,5 +1,4 @@
 import 'dart:isolate';
-import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
@@ -31,11 +30,50 @@ class ImagePipeline {
     [63, 31, 55, 23, 61, 29, 53, 21],
   ];
 
+  static NormalizedCrop defaultCrop(Uint8List source, int quarterTurns) {
+    var decoded = img.decodeImage(source);
+    if (decoded == null) throw const ImageProcessingException('Invalid JPEG or PNG image.');
+    decoded = img.bakeOrientation(decoded);
+    final imageWidth = quarterTurns.isOdd ? decoded.height : decoded.width;
+    final imageHeight = quarterTurns.isOdd ? decoded.width : decoded.height;
+    final widthUnit = imageWidth ~/ 4;
+    final heightUnit = imageHeight ~/ 3;
+    final unit = widthUnit < heightUnit ? widthUnit : heightUnit;
+    final width = unit * 4;
+    final height = unit * 3;
+    return NormalizedCrop(
+      left: ((imageWidth - width) ~/ 2) / imageWidth,
+      top: ((imageHeight - height) ~/ 2) / imageHeight,
+      width: width / imageWidth,
+      height: height / imageHeight,
+    );
+  }
+
   Future<ProcessedImage> process(
     Uint8List source,
     PhotoEditParameters edit, {
     bool fullSize = true,
   }) => Isolate.run(() => processSync(source, edit, fullSize: fullSize));
+
+  Future<Uint8List> originalPreview(Uint8List source, PhotoEditParameters edit) =>
+      Isolate.run(() => originalPreviewSync(source, edit));
+
+  static Uint8List originalPreviewSync(Uint8List source, PhotoEditParameters edit) {
+    var decoded = img.decodeImage(source);
+    if (decoded == null) throw const ImageProcessingException('Invalid JPEG or PNG image.');
+    decoded = img.bakeOrientation(decoded);
+    for (var i = 0; i < edit.quarterTurns % 4; i++) {
+      decoded = img.copyRotate(decoded, angle: 90);
+    }
+    final crop = edit.crop.clamped;
+    final x = (crop.left * decoded.width).round();
+    final y = (crop.top * decoded.height).round();
+    final width = (crop.width * decoded.width).round();
+    final height = (crop.height * decoded.height).round();
+    final cropped = img.copyCrop(decoded, x: x, y: y, width: width, height: height);
+    return Uint8List.fromList(img.encodePng(img.copyResize(cropped,
+      width: 400, height: 300, interpolation: img.Interpolation.cubic)));
+  }
 
   static ProcessedImage processSync(
     Uint8List source,
@@ -53,20 +91,14 @@ class ImagePipeline {
     var y = (crop.top * decoded.height).round().clamp(0, decoded.height - 1).toInt();
     var cropWidth = (crop.width * decoded.width).round().clamp(1, decoded.width - x).toInt();
     var cropHeight = (crop.height * decoded.height).round().clamp(1, decoded.height - y).toInt();
-    // Center-trim to exact integer 4:3 dimensions, so resizing never stretches.
-    final unit = math.min(cropWidth ~/ 4, cropHeight ~/ 3);
-    if (unit < 1) throw const ImageProcessingException('The crop is too small.');
-    final nextWidth = unit * 4;
-    final nextHeight = unit * 3;
-    x += (cropWidth - nextWidth) ~/ 2;
-    y += (cropHeight - nextHeight) ~/ 2;
-    cropWidth = nextWidth;
-    cropHeight = nextHeight;
+    if (cropWidth < 4 || cropHeight < 3 || cropWidth * 3 != cropHeight * 4) {
+      throw const ImageProcessingException('Crop must be an exact 4:3 selection.');
+    }
     final cropped = img.copyCrop(decoded, x: x, y: y, width: cropWidth, height: cropHeight);
     final outWidth = fullSize ? width : 400;
     final outHeight = fullSize ? height : 300;
     final frame = img.copyResize(cropped, width: outWidth, height: outHeight,
-        interpolation: img.Interpolation.linear);
+        interpolation: img.Interpolation.cubic);
     final bytes = Uint8List(outWidth * outHeight);
     for (var py = 0; py < outHeight; py++) {
       for (var px = 0; px < outWidth; px++) {
