@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 
+import '../image_processing/image_pipeline.dart';
 import '../state/playlist_models.dart';
 
 class VisualCropScreen extends StatefulWidget {
@@ -48,7 +49,9 @@ class _VisualCropScreenState extends State<VisualCropScreen> {
       crop.width * image.width, crop.height * image.height);
     final width = rect.width.round();
     final height = rect.height.round();
-    if (width * 3 != height * 4) return null;
+    if (width * 3 != height * 4) {
+      return null;
+    }
     return Rect.fromLTWH(rect.left.roundToDouble(), rect.top.roundToDouble(),
       width.toDouble(), height.toDouble());
   }
@@ -69,7 +72,9 @@ class _VisualCropScreenState extends State<VisualCropScreen> {
     final units = (cropPixels.width ~/ 4 + deltaUnits).clamp(10, maxUnits);
     final width = (units * 4).toDouble();
     final height = width * 3 / 4;
-    if (height > image.height) return;
+    if (height > image.height) {
+      return;
+    }
     final center = cropPixels.center;
     final left = (center.dx - width / 2).clamp(0, image.width - width).toDouble();
     final top = (center.dy - height / 2).clamp(0, image.height - height).toDouble();

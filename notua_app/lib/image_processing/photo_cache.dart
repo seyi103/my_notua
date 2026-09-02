@@ -22,7 +22,9 @@ class TemporaryPhotoCache implements PhotoCache {
 
   Future<Directory> get root async {
     final existing = _root;
-    if (existing != null) return existing..createSync(recursive: true);
+    if (existing != null) {
+      return existing..createSync(recursive: true);
+    }
     final temporary = await getTemporaryDirectory();
     return _root = await Directory(p.join(temporary.path, 'notua_photo_cache'))
         .create(recursive: true);
@@ -53,7 +55,9 @@ class TemporaryPhotoCache implements PhotoCache {
       await _atomicWrite(binPath, y8);
     } on Object {
       final previewFile = File(previewPath);
-      if (await previewFile.exists()) await previewFile.delete();
+      if (await previewFile.exists()) {
+        await previewFile.delete();
+      }
       rethrow;
     }
     await deletePaths([oldPreviewPath, oldBinPath]);
@@ -64,7 +68,9 @@ class TemporaryPhotoCache implements PhotoCache {
   Future<void> deletePaths(Iterable<String?> paths) async {
     for (final path in paths.whereType<String>().toSet()) {
       final file = File(path);
-      if (await file.exists()) await file.delete();
+      if (await file.exists()) {
+        await file.delete();
+      }
     }
   }
 

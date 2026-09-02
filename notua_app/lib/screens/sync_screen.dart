@@ -49,7 +49,9 @@ class _SyncScreenState extends State<SyncScreen> {
         .synchronize(plan)
         .listen(
           (event) {
-            if (!mounted) return;
+            if (!mounted) {
+              return;
+            }
 
             if (event.stage == SyncStage.disconnect && event.progress >= 1) {
               sawTerminalUpdate = true;
@@ -68,7 +70,9 @@ class _SyncScreenState extends State<SyncScreen> {
             }
           },
           onDone: () {
-            if (!mounted || streamFailed) return;
+            if (!mounted || streamFailed) {
+              return;
+            }
 
             if (!sawTerminalUpdate) {
               setState(() {

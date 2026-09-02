@@ -10,9 +10,13 @@ import '../state/playlist_models.dart';
 import 'visual_crop_screen.dart';
 
 Uint8List _editorSource(PhotoEditorScreen widget) {
-  if (widget.photo != null) return widget.photo!.bytes;
+  if (widget.photo != null) {
+    return widget.photo!.bytes;
+  }
   final path = widget.sourcePath ?? widget.slide?.sourcePath;
-  if (path != null) return File(path).readAsBytesSync();
+  if (path != null) {
+    return File(path).readAsBytesSync();
+  }
   throw StateError('PhotoEditorScreen requires a selected or cached source image.');
 }
 
@@ -70,7 +74,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   void update(PhotoEditParameters next) {
-    if (saving) return;
+    if (saving) {
+      return;
+    }
     setState(() => value = next);
     _schedulePreview();
   }
@@ -89,12 +95,16 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   void _startPreviewWorker() {
-    if (_previewWork != null || saving) return;
+    if (_previewWork != null || saving) {
+      return;
+    }
     late final Future<void> work;
     work = _drainPreviewQueue();
     _previewWork = work;
     work.whenComplete(() {
-      if (!identical(_previewWork, work)) return;
+      if (!identical(_previewWork, work)) {
+        return;
+      }
       _previewWork = null;
       if (_pendingPreview != null && mounted && !saving) {
         _startPreviewWorker();
@@ -105,7 +115,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   Future<void> _drainPreviewQueue() async {
     while (true) {
       final request = _pendingPreview;
-      if (request == null) return;
+      if (request == null) {
+        return;
+      }
       _pendingPreview = null;
       try {
         final result = await pipeline.process(
@@ -114,7 +126,9 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
           fullSize: false,
         );
         final original = await pipeline.originalPreview(source, request.edit);
-        if (!mounted || request.token != _generation) continue;
+        if (!mounted || request.token != _generation) {
+          continue;
+        }
         setState(() {
           preview = result.previewPng;
           originalPreview = original;
@@ -129,10 +143,14 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   Future<void> _crop() async {
-    if (saving) return;
+    if (saving) {
+      return;
+    }
     final next = await Navigator.push<NormalizedCrop>(context,
       MaterialPageRoute(builder: (_) => VisualCropScreen(source: source, edit: value)));
-    if (next != null) update(value.copyWith(crop: next));
+    if (next != null) {
+      update(value.copyWith(crop: next));
+    }
   }
 
   Future<void> _save() async {
@@ -144,13 +162,22 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     try {
       await _previewWork;
       final result = await pipeline.process(source, captured);
-      if (mounted) Navigator.pop(context, PhotoEditorResult(edit: captured, processed: result));
+      if (mounted) {
+        Navigator.pop(
+          context,
+          PhotoEditorResult(edit: captured, processed: result),
+        );
+      }
     } on Object catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
-      if (mounted) setState(() {
-        saving = false;
-        processingError = '최종 이미지를 만들지 못했어요: $error';
-      });
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$error')));
+        setState(() {
+          saving = false;
+          processingError = '최종 이미지를 만들지 못했어요: $error';
+        });
+      }
     }
   }
 

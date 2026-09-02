@@ -23,9 +23,12 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  late PhotoCache _photoCache;
+
   @override
   void initState() {
     super.initState();
+    _photoCache = widget.photoCache ?? TemporaryPhotoCache();
     widget.draft.addListener(_refresh);
     WidgetsBinding.instance.addPostFrameCallback((_) => _recoverLostPhoto());
   }
@@ -33,9 +36,13 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void didUpdateWidget(covariant HomeScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.draft == widget.draft) return;
-    oldWidget.draft.removeListener(_refresh);
-    widget.draft.addListener(_refresh);
+    if (oldWidget.photoCache != widget.photoCache) {
+      _photoCache = widget.photoCache ?? TemporaryPhotoCache();
+    }
+    if (oldWidget.draft != widget.draft) {
+      oldWidget.draft.removeListener(_refresh);
+      widget.draft.addListener(_refresh);
+    }
   }
 
   @override
@@ -47,11 +54,15 @@ class _HomeScreenState extends State<HomeScreen> {
   void _refresh() => setState(() {});
 
   Future<void> _recoverLostPhoto() async {
-    if (widget.draft.slides.length >= PlaylistDraft.maxSlides) return;
+    if (widget.draft.slides.length >= PlaylistDraft.maxSlides) {
+      return;
+    }
     try {
       final photo = await (widget.photoPicker ?? SystemPhotoPickerService())
           .retrieveLostPhoto();
-      if (photo != null && mounted) await _edit(recoveredPhoto: photo);
+      if (photo != null && mounted) {
+        await _edit(recoveredPhoto: photo);
+      }
     } on Object {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -66,8 +77,8 @@ class _HomeScreenState extends State<HomeScreen> {
         widget.draft.slides.length >= PlaylistDraft.maxSlides) {
       return;
     }
+    final operationCache = _photoCache;
     SelectedPhoto? photo = recoveredPhoto;
-    final cache = widget.photoCache ?? TemporaryPhotoCache();
     String? sourcePath;
     String? reservedId;
     if (slide == null) {
@@ -76,31 +87,49 @@ class _HomeScreenState extends State<HomeScreen> {
           photo = await (widget.photoPicker ?? SystemPhotoPickerService())
               .pickPhoto();
         } on Object {
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('JPEG 또는 PNG 사진을 선택해 주세요.')));
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('JPEG 또는 PNG 사진을 선택해 주세요.'),
+              ),
+            );
+          }
           return;
         }
       }
-      if (photo == null || !mounted) return;
+      if (photo == null || !mounted) {
+        return;
+      }
       reservedId = widget.draft.reservePhotoId();
-      if (reservedId == null) return;
-      sourcePath = await cache.storeSource(
+      if (reservedId == null) {
+        return;
+      }
+      sourcePath = await operationCache.storeSource(
         reservedId,
         photo.extension,
         photo.bytes,
       );
+    }
+    if (!mounted) {
+      if (sourcePath != null) {
+        await operationCache.deletePaths([sourcePath]);
+      }
+      return;
     }
     final result = await Navigator.push<PhotoEditorResult>(
       context,
       MaterialPageRoute(builder: (_) => PhotoEditorScreen(slide: slide, sourcePath: sourcePath, photo: photo, pipeline: widget.imagePipeline)),
     );
     if (result == null) {
-      if (sourcePath != null) await cache.deletePaths([sourcePath]);
+      if (sourcePath != null) {
+        await operationCache.deletePaths([sourcePath]);
+      }
       return;
     }
     if (slide?.previewPath case final oldPreview?) {
       await FileImage(File(oldPreview)).evict();
     }
-    final outputs = await cache.replaceOutputs(
+    final outputs = await operationCache.replaceOutputs(
       slide?.id ?? reservedId!,
       result.processed.previewPng,
       result.processed.y8,
@@ -184,7 +213,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                 if (selected.previewPath case final preview?) {
                                   await FileImage(File(preview)).evict();
                                 }
-                                await cache.deletePaths([selected.sourcePath, selected.previewPath, selected.binPath]);
+                                await _photoCache.deletePaths([
+                                  selected.sourcePath,
+                                  selected.previewPath,
+                                  selected.binPath,
+                                ]);
                               },
                             ),
                           ],
@@ -470,7 +503,9 @@ class _IntervalTile extends StatelessWidget {
               .map((v) => DropdownMenuItem(value: v, child: Text('$v분마다')))
               .toList(),
           onChanged: (v) {
-            if (v != null) onChanged(v);
+            if (v != null) {
+              onChanged(v);
+            }
           },
         ),
       ),

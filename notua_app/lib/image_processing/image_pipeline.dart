@@ -31,9 +31,11 @@ class ImagePipeline {
   ];
 
   static NormalizedCrop defaultCrop(Uint8List source, int quarterTurns) {
-    var decoded = img.decodeImage(source);
-    if (decoded == null) throw const ImageProcessingException('Invalid JPEG or PNG image.');
-    decoded = img.bakeOrientation(decoded);
+    final sourceImage = img.decodeImage(source);
+    if (sourceImage == null) {
+      throw const ImageProcessingException('Invalid JPEG or PNG image.');
+    }
+    final decoded = img.bakeOrientation(sourceImage);
     flattenOnWhite(decoded);
     final imageWidth = quarterTurns.isOdd ? decoded.height : decoded.width;
     final imageHeight = quarterTurns.isOdd ? decoded.width : decoded.height;
@@ -60,9 +62,11 @@ class ImagePipeline {
       Isolate.run(() => originalPreviewSync(source, edit));
 
   static Uint8List originalPreviewSync(Uint8List source, PhotoEditParameters edit) {
-    var decoded = img.decodeImage(source);
-    if (decoded == null) throw const ImageProcessingException('Invalid JPEG or PNG image.');
-    decoded = img.bakeOrientation(decoded);
+    final sourceImage = img.decodeImage(source);
+    if (sourceImage == null) {
+      throw const ImageProcessingException('Invalid JPEG or PNG image.');
+    }
+    var decoded = img.bakeOrientation(sourceImage);
     flattenOnWhite(decoded);
     for (var i = 0; i < edit.quarterTurns % 4; i++) {
       decoded = img.copyRotate(decoded, angle: 90);
@@ -82,9 +86,11 @@ class ImagePipeline {
     PhotoEditParameters edit, {
     bool fullSize = true,
   }) {
-    var decoded = img.decodeImage(source);
-    if (decoded == null) throw const ImageProcessingException('Invalid JPEG or PNG image.');
-    decoded = img.bakeOrientation(decoded);
+    final sourceImage = img.decodeImage(source);
+    if (sourceImage == null) {
+      throw const ImageProcessingException('Invalid JPEG or PNG image.');
+    }
+    var decoded = img.bakeOrientation(sourceImage);
     flattenOnWhite(decoded);
     for (var i = 0; i < edit.quarterTurns % 4; i++) {
       decoded = img.copyRotate(decoded, angle: 90);
@@ -144,19 +150,29 @@ class ImagePipeline {
 
   /// ECMAScript ToUint8Clamp, used by writes to ImageData's Uint8ClampedArray.
   static int _clamp8(double value) {
-    if (value <= 0) return 0;
-    if (value >= 255) return 255;
+    if (value <= 0) {
+      return 0;
+    }
+    if (value >= 255) {
+      return 255;
+    }
     final floor = value.floor();
     final fraction = value - floor;
-    if (fraction < .5) return floor;
-    if (fraction > .5) return floor + 1;
+    if (fraction < .5) {
+      return floor;
+    }
+    if (fraction > .5) {
+      return floor + 1;
+    }
     return floor.isEven ? floor : floor + 1;
   }
 
   static double _clampRange(double value) => value.clamp(0.0, 255.0);
 
   static void flattenOnWhite(img.Image image) {
-    if (!image.hasAlpha) return;
+    if (!image.hasAlpha) {
+      return;
+    }
     for (final pixel in image) {
       final alpha = pixel.a.toDouble() / pixel.maxChannelValue;
       num composite(num channel) =>

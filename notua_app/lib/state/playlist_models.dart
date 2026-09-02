@@ -164,7 +164,9 @@ class PlaylistDraft extends ChangeNotifier {
     for (final slide in slides) {
       final match = _generatedIdPattern.firstMatch(slide.id);
       final value = match == null ? null : int.tryParse(match.group(1)!);
-      if (value != null && value > highest) highest = value;
+      if (value != null && value > highest) {
+        highest = value;
+      }
     }
     return highest + 1;
   }
@@ -194,8 +196,12 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   bool add({int color = 0xff9a8881}) {
-    if (_pendingSyncPlan != null) return false;
-    if (_slides.length >= maxSlides) return false;
+    if (_pendingSyncPlan != null) {
+      return false;
+    }
+    if (_slides.length >= maxSlides) {
+      return false;
+    }
     final item = SlideItem(id: 'new-${_nextId++}', color: color);
     _slides.add(item);
     _selectedId = item.id;
@@ -204,14 +210,18 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   String? reservePhotoId() {
-    if (_pendingSyncPlan != null || _slides.length >= maxSlides) return null;
+    if (_pendingSyncPlan != null || _slides.length >= maxSlides) {
+      return null;
+    }
     return 'new-${_nextId++}';
   }
 
   bool addPhoto({required String id, required String name, required String sourcePath,
       required PhotoEditParameters edit, required String previewPath,
       required String binPath}) {
-    if (_pendingSyncPlan != null || _slides.length >= maxSlides) return false;
+    if (_pendingSyncPlan != null || _slides.length >= maxSlides) {
+      return false;
+    }
     final item = SlideItem(id: id, color: 0xff9a8881,
       sourceName: name, sourcePath: sourcePath, edit: edit,
       previewPath: previewPath, binPath: binPath);
@@ -222,9 +232,13 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void remove(String id) {
-    if (_pendingSyncPlan != null) return;
+    if (_pendingSyncPlan != null) {
+      return;
+    }
     final index = _slides.indexWhere((item) => item.id == id);
-    if (index < 0) return;
+    if (index < 0) {
+      return;
+    }
     _slides.removeAt(index);
     if (_selectedId == id) {
       _selectedId = _slides.isEmpty
@@ -235,7 +249,9 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void select(String id) {
-    if (_pendingSyncPlan != null) return;
+    if (_pendingSyncPlan != null) {
+      return;
+    }
     if (_slides.any((item) => item.id == id)) {
       _selectedId = id;
       notifyListeners();
@@ -243,7 +259,9 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void reorder(int oldIndex, int newIndex) {
-    if (_pendingSyncPlan != null) return;
+    if (_pendingSyncPlan != null) {
+      return;
+    }
     if (oldIndex == newIndex ||
         oldIndex < 0 ||
         newIndex < 0 ||
@@ -257,16 +275,24 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void edit(String id, PhotoEditParameters edit, {String? previewPath, String? binPath}) {
-    if (_pendingSyncPlan != null) return;
+    if (_pendingSyncPlan != null) {
+      return;
+    }
     final index = _slides.indexWhere((item) => item.id == id);
-    if (index < 0) return;
+    if (index < 0) {
+      return;
+    }
     _slides[index] = _slides[index].copyWith(edit: edit, previewPath: previewPath, binPath: binPath);
     notifyListeners();
   }
 
   void setInterval(int minutes) {
-    if (_pendingSyncPlan != null) return;
-    if (_intervalMinutes == minutes) return;
+    if (_pendingSyncPlan != null) {
+      return;
+    }
+    if (_intervalMinutes == minutes) {
+      return;
+    }
     _intervalMinutes = minutes;
     notifyListeners();
   }
@@ -279,7 +305,9 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void markSynchronized(SyncPlan plan) {
-    if (!identical(plan, _pendingSyncPlan)) return;
+    if (!identical(plan, _pendingSyncPlan)) {
+      return;
+    }
     _snapshot = DevicePlaylistSnapshot(
       slides: List.of(plan.targetSlides),
       intervalMinutes: plan.targetIntervalMinutes,
@@ -289,7 +317,9 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void abortSynchronization(SyncPlan plan) {
-    if (!identical(plan, _pendingSyncPlan)) return;
+    if (!identical(plan, _pendingSyncPlan)) {
+      return;
+    }
     _pendingSyncPlan = null;
     notifyListeners();
   }

@@ -20,8 +20,12 @@ class SystemPhotoPickerService implements PhotoPickerService {
   @override
   Future<SelectedPhoto?> retrieveLostPhoto() async {
     final response = await _picker.retrieveLostData();
-    if (response.isEmpty) return null;
-    if (response.exception != null) throw response.exception!;
+    if (response.isEmpty) {
+      return null;
+    }
+    if (response.exception != null) {
+      throw response.exception!;
+    }
     final files = response.files;
     final file = files != null && files.isNotEmpty ? files.first : response.file;
     return file == null ? null : _validate(file);
@@ -30,6 +34,11 @@ class SystemPhotoPickerService implements PhotoPickerService {
   Future<SelectedPhoto> _validate(XFile file) async {
     final bytes = await file.readAsBytes();
     final decoder = img.findDecoderForData(bytes);
+    if (decoder == null) {
+      throw const FormatException(
+        'Only valid JPEG and PNG photos are supported.',
+      );
+    }
     final extension = switch (decoder) {
       img.JpegDecoder() => 'jpg',
       img.PngDecoder() => 'png',
