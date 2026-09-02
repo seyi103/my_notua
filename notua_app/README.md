@@ -1,16 +1,18 @@
-# notua_app
+# Notua app
 
-A new Flutter project.
+The production entry point is a local-first slideshow draft editor. The flow is
+**slideshow home → photo editor → apply progress/result**. The UI is deliberately
+separated from device transport through `SynchronizationService`; this phase uses
+`FakeSynchronizationService` only.
 
-## Getting Started
+`PlaylistDraft` owns selection, ordering, the five-photo limit, interval, and the
+comparison with `DevicePlaylistSnapshot`. `SyncPlan` keeps image uploads, deletion,
+order, and interval changes separate so an order-only edit never uploads a photo.
+Every plan also carries the complete target slide ID order and target interval;
+the transport layer therefore does not need to read mutable presentation state.
+A failed synchronization does not commit the snapshot and therefore preserves all
+pending draft changes.
 
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+In debug builds, the validated hardware screen remains available at
+`/developer/transfer`. It is not registered in release builds and its Android
+MethodChannel/EventChannel implementation is unchanged.

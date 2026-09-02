@@ -18,4 +18,6 @@ bool noteBleGattActivity();
 BleState bleState();
 const char* bleStateName(BleState state);
 bool bleSessionExpired();
+// True once after APPLY has been accepted and APPLYING notified from poll().
+bool consumeBleApplyRequest();
 void stopBlePeripheral();
