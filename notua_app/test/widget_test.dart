@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:notua_app/main.dart';
-import 'package:notua_app/screens/photo_editor_screen.dart';
 import 'package:notua_app/screens/home_screen.dart';
+import 'package:notua_app/screens/photo_editor_screen.dart';
 import 'package:notua_app/screens/sync_screen.dart';
 import 'package:notua_app/state/playlist_models.dart';
 import 'package:notua_app/sync/fake_sync_service.dart';
@@ -64,7 +64,9 @@ void main() {
     expect(find.text('첫 사진을 골라주세요'), findsOneWidget);
     expect(find.text('사진 추가'), findsOneWidget);
     expect(
-      tester.widget<FilledButton>(find.widgetWithText(FilledButton, '액자에 적용하기')).onPressed,
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, '액자에 적용하기'))
+          .onPressed,
       isNull,
     );
   });
@@ -175,11 +177,17 @@ void main() {
     expect(find.text('완료'), findsOneWidget);
   });
 
-  testWidgets('progress at 100% followed by error remains dirty', (tester) async {
+  testWidgets('progress at 100% followed by error remains dirty', (
+    tester,
+  ) async {
     final controller = StreamController<SyncUpdate>();
     final service = _ControllerService(controller);
     final draft = PlaylistDraft(slides: [slideForWidget('a')])..add();
-    await tester.pumpWidget(MaterialApp(home: SyncScreen(draft: draft, service: service)));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SyncScreen(draft: draft, service: service),
+      ),
+    );
     controller.add(const SyncUpdate(stage: SyncStage.disconnect, progress: 1));
     controller.addError(const SyncException('late failure'));
     await tester.pump();
@@ -189,19 +197,39 @@ void main() {
   });
 
   testWidgets('home rebinds when its draft changes', (tester) async {
+    useTallTestSurface(tester);
     final oldDraft = PlaylistDraft(slides: [slideForWidget('old')]);
     final newDraft = PlaylistDraft(slides: [slideForWidget('new')]);
     final service = EmptySynchronizationService();
-    await tester.pumpWidget(MaterialApp(home: HomeScreen(draft: oldDraft, syncService: service)));
-    await tester.pumpWidget(MaterialApp(home: HomeScreen(draft: newDraft, syncService: service)));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomeScreen(draft: oldDraft, syncService: service),
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomeScreen(draft: newDraft, syncService: service),
+      ),
+    );
     newDraft.add();
     await tester.pump();
     expect(find.text('●  변경된 사진 1장'), findsOneWidget);
   });
 
   testWidgets('valid non-preset interval is retained', (tester) async {
-    final draft = PlaylistDraft(slides: [slideForWidget('a')], intervalMinutes: 2);
-    await tester.pumpWidget(MaterialApp(home: HomeScreen(draft: draft, syncService: EmptySynchronizationService())));
+    useTallTestSurface(tester);
+    final draft = PlaylistDraft(
+      slides: [slideForWidget('a')],
+      intervalMinutes: 2,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomeScreen(
+          draft: draft,
+          syncService: EmptySynchronizationService(),
+        ),
+      ),
+    );
     expect(find.text('2분마다'), findsOneWidget);
     expect(draft.intervalMinutes, 2);
   });
