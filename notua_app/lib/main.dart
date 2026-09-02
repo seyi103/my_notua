@@ -39,7 +39,7 @@ class NotuaApp extends StatelessWidget {
       ),
       routes: routes,
       home: HomeScreen(
-        draft: initialDraft ?? PlaylistDraft.withMockData(),
+        draft: initialDraft ?? PlaylistDraft(slides: const []),
         syncService: syncService ?? FakeSynchronizationService(),
       ),
     );

@@ -3,13 +3,15 @@ import 'package:flutter/material.dart';
 import '../state/playlist_models.dart';
 import '../sync/fake_sync_service.dart';
 import '../widgets/photo_placeholder.dart';
+import '../image_processing/photo_picker_service.dart';
 import 'photo_editor_screen.dart';
 import 'sync_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, required this.draft, required this.syncService});
+  const HomeScreen({super.key, required this.draft, required this.syncService, this.photoPicker});
   final PlaylistDraft draft;
   final SynchronizationService syncService;
+  final PhotoPickerService? photoPicker;
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -42,16 +44,28 @@ class _HomeScreenState extends State<HomeScreen> {
         widget.draft.slides.length >= PlaylistDraft.maxSlides) {
       return;
     }
-    final result = await Navigator.push<PhotoEditParameters>(
+    SelectedPhoto? photo;
+    if (slide == null) {
+      try {
+        photo = await (widget.photoPicker ?? SystemPhotoPickerService()).pickPhoto();
+      } on Object {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('JPEG 또는 PNG 사진을 선택해 주세요.')));
+        return;
+      }
+      if (photo == null || !mounted) return;
+    }
+    final result = await Navigator.push<PhotoEditorResult>(
       context,
-      MaterialPageRoute(builder: (_) => PhotoEditorScreen(slide: slide)),
+      MaterialPageRoute(builder: (_) => PhotoEditorScreen(slide: slide, photo: photo)),
     );
     if (result == null) return;
     if (slide == null) {
-      widget.draft.add();
-      widget.draft.edit(widget.draft.selectedId!, result);
+      widget.draft.addPhoto(name: photo!.name, sourceBytes: photo.bytes,
+        edit: result.edit, previewPng: result.processed.previewPng,
+        y8Bytes: result.processed.y8);
     } else {
-      widget.draft.edit(slide.id, result);
+      widget.draft.edit(slide.id, result.edit,
+        previewPng: result.processed.previewPng, y8Bytes: result.processed.y8);
     }
   }
 
@@ -101,10 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Stack(
                     children: [
                       Positioned.fill(
-                        child: PhotoPlaceholder(
-                          color: selected.color,
-                          parameters: selected.edit,
-                        ),
+                        child: _SlidePhoto(slide: selected),
                       ),
                       Positioned(
                         right: 12,
@@ -226,7 +237,7 @@ class _Thumbnail extends StatelessWidget {
                       ),
                       child: Padding(
                         padding: const EdgeInsets.all(2),
-                        child: PhotoPlaceholder(color: slide.color, radius: 10),
+                        child: _SlidePhoto(slide: slide, radius: 10),
                       ),
                     ),
                   ),
@@ -267,6 +278,19 @@ class _Thumbnail extends StatelessWidget {
       ),
     );
   }
+}
+
+class _SlidePhoto extends StatelessWidget {
+  const _SlidePhoto({required this.slide, this.radius = 20});
+  final SlideItem slide;
+  final double radius;
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+    borderRadius: BorderRadius.circular(radius),
+    child: slide.previewPng == null
+      ? PhotoPlaceholder(color: slide.color, radius: radius)
+      : Image.memory(slide.previewPng!, fit: BoxFit.cover, gaplessPlayback: true),
+  );
 }
 
 class _AddCard extends StatelessWidget {

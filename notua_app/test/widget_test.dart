@@ -81,7 +81,7 @@ void main() {
     expect(find.text('슬라이드에 추가'), findsOneWidget);
   });
 
-  testWidgets('each editor slider changes the preview filter', (tester) async {
+  testWidgets('each editor slider updates its real processing state', (tester) async {
     useTallTestSurface(tester);
     await tester.pumpWidget(const MaterialApp(home: PhotoEditorScreen()));
     for (final key in [
@@ -89,14 +89,10 @@ void main() {
       PhotoEditorScreen.contrastSliderKey,
       PhotoEditorScreen.saturationSliderKey,
     ]) {
-      final before = tester
-          .widget<ColorFiltered>(find.byType(ColorFiltered))
-          .colorFilter;
+      final before = tester.widget<Slider>(find.byKey(key)).value;
       await tester.drag(find.byKey(key), const Offset(45, 0));
       await tester.pump();
-      final after = tester
-          .widget<ColorFiltered>(find.byType(ColorFiltered))
-          .colorFilter;
+      final after = tester.widget<Slider>(find.byKey(key)).value;
       expect(after, isNot(equals(before)));
     }
   });

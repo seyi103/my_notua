@@ -1,4 +1,26 @@
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
+
+@immutable
+class NormalizedCrop {
+  const NormalizedCrop({this.left = 0, this.top = 0, this.width = 1, this.height = 1});
+  final double left, top, width, height;
+  NormalizedCrop get clamped {
+    final l = left.clamp(0.0, .999).toDouble();
+    final t = top.clamp(0.0, .999).toDouble();
+    return NormalizedCrop(
+      left: l,
+      top: t,
+      width: width.clamp(.001, 1 - l).toDouble(),
+      height: height.clamp(.001, 1 - t).toDouble(),
+    );
+  }
+  @override
+  bool operator ==(Object other) => other is NormalizedCrop && left == other.left && top == other.top && width == other.width && height == other.height;
+  @override
+  int get hashCode => Object.hash(left, top, width, height);
+}
 
 @immutable
 class PhotoEditParameters {
@@ -7,23 +29,27 @@ class PhotoEditParameters {
     this.contrast = 0.5,
     this.saturation = 1,
     this.quarterTurns = 0,
+    this.crop = const NormalizedCrop(),
   });
 
   final double brightness;
   final double contrast;
   final double saturation;
   final int quarterTurns;
+  final NormalizedCrop crop;
 
   PhotoEditParameters copyWith({
     double? brightness,
     double? contrast,
     double? saturation,
     int? quarterTurns,
+    NormalizedCrop? crop,
   }) => PhotoEditParameters(
     brightness: brightness ?? this.brightness,
     contrast: contrast ?? this.contrast,
     saturation: saturation ?? this.saturation,
     quarterTurns: quarterTurns ?? this.quarterTurns,
+    crop: crop ?? this.crop,
   );
 
   @override
@@ -32,11 +58,12 @@ class PhotoEditParameters {
       brightness == other.brightness &&
       contrast == other.contrast &&
       saturation == other.saturation &&
-      quarterTurns == other.quarterTurns;
+      quarterTurns == other.quarterTurns &&
+      crop == other.crop;
 
   @override
   int get hashCode =>
-      Object.hash(brightness, contrast, saturation, quarterTurns);
+      Object.hash(brightness, contrast, saturation, quarterTurns, crop);
 }
 
 @immutable
@@ -45,14 +72,24 @@ class SlideItem {
     required this.id,
     required this.color,
     this.edit = const PhotoEditParameters(),
+    this.sourceName,
+    this.sourceBytes,
+    this.previewPng,
+    this.y8Bytes,
   });
 
   final String id;
   final int color;
   final PhotoEditParameters edit;
+  final String? sourceName;
+  final Uint8List? sourceBytes;
+  final Uint8List? previewPng;
+  final Uint8List? y8Bytes;
 
-  SlideItem copyWith({PhotoEditParameters? edit}) =>
-      SlideItem(id: id, color: color, edit: edit ?? this.edit);
+  SlideItem copyWith({PhotoEditParameters? edit, Uint8List? previewPng, Uint8List? y8Bytes}) =>
+      SlideItem(id: id, color: color, edit: edit ?? this.edit, sourceName: sourceName,
+        sourceBytes: sourceBytes, previewPng: previewPng ?? this.previewPng,
+        y8Bytes: y8Bytes ?? this.y8Bytes);
 }
 
 @immutable
@@ -168,6 +205,19 @@ class PlaylistDraft extends ChangeNotifier {
     return true;
   }
 
+  bool addPhoto({required String name, required Uint8List sourceBytes,
+      required PhotoEditParameters edit, required Uint8List previewPng,
+      required Uint8List y8Bytes}) {
+    if (_pendingSyncPlan != null || _slides.length >= maxSlides) return false;
+    final item = SlideItem(id: 'new-${_nextId++}', color: 0xff9a8881,
+      sourceName: name, sourceBytes: sourceBytes, edit: edit,
+      previewPng: previewPng, y8Bytes: y8Bytes);
+    _slides.add(item);
+    _selectedId = item.id;
+    notifyListeners();
+    return true;
+  }
+
   void remove(String id) {
     if (_pendingSyncPlan != null) return;
     final index = _slides.indexWhere((item) => item.id == id);
@@ -203,11 +253,11 @@ class PlaylistDraft extends ChangeNotifier {
     notifyListeners();
   }
 
-  void edit(String id, PhotoEditParameters edit) {
+  void edit(String id, PhotoEditParameters edit, {Uint8List? previewPng, Uint8List? y8Bytes}) {
     if (_pendingSyncPlan != null) return;
     final index = _slides.indexWhere((item) => item.id == id);
     if (index < 0) return;
-    _slides[index] = _slides[index].copyWith(edit: edit);
+    _slides[index] = _slides[index].copyWith(edit: edit, previewPng: previewPng, y8Bytes: y8Bytes);
     notifyListeners();
   }
 
