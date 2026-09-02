@@ -184,8 +184,9 @@ class PlaylistDraft extends ChangeNotifier {
         oldIndex < 0 ||
         newIndex < 0 ||
         oldIndex >= _slides.length ||
-        newIndex >= _slides.length)
+        newIndex >= _slides.length) {
       return;
+    }
     final item = _slides.removeAt(oldIndex);
     _slides.insert(newIndex, item);
     notifyListeners();

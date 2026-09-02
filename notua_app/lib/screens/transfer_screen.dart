@@ -48,11 +48,12 @@ class _TransferScreenState extends State<TransferScreen> {
   Future<void> select() async {
     try {
       final p = await method.invokeMethod<String>('selectFile');
-      if (mounted)
+      if (mounted) {
         setState(() {
           path = p;
           status = p ?? 'No file';
         });
+      }
     } catch (e) {
       if (mounted) setState(() => status = '$e');
     }
@@ -63,13 +64,14 @@ class _TransferScreenState extends State<TransferScreen> {
       final raw = await method.invokeMethod<String>('connect');
       final info = jsonDecode(raw!);
       final slot = info['candidateSlot'] as int;
-      if (mounted)
+      if (mounted) {
         setState(() {
           candidateSlot = slot >= 0 ? slot : null;
           status = slot >= 0
               ? 'Notua AP ready; automatically selected unused candidate slot $slot'
               : 'All five slots are active; spike upload refused';
         });
+      }
     } catch (e) {
       if (mounted) setState(() => status = '$e');
     }

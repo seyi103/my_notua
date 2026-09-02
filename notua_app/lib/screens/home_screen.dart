@@ -30,8 +30,10 @@ class _HomeScreenState extends State<HomeScreen> {
   void _refresh() => setState(() {});
 
   Future<void> _edit({SlideItem? slide}) async {
-    if (slide == null && widget.draft.slides.length >= PlaylistDraft.maxSlides)
+    if (slide == null &&
+        widget.draft.slides.length >= PlaylistDraft.maxSlides) {
       return;
+    }
     final result = await Navigator.push<PhotoEditParameters>(
       context,
       MaterialPageRoute(builder: (_) => PhotoEditorScreen(slide: slide)),
@@ -244,7 +246,7 @@ class _Thumbnail extends StatelessWidget {
     );
     return DragTarget<int>(
       onAcceptWithDetails: (details) => draft.reorder(details.data, index),
-      builder: (_, __, ___) => LongPressDraggable<int>(
+      builder: (_, _, _) => LongPressDraggable<int>(
         data: index,
         feedback: SizedBox(
           width: 86,

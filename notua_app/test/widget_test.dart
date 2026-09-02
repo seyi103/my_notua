@@ -34,8 +34,18 @@ class RetrySynchronizationService implements SynchronizationService {
   }
 }
 
+void useTallTestSurface(WidgetTester tester) {
+  tester.view.physicalSize = const Size(800, 1400);
+  tester.view.devicePixelRatio = 1;
+
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+}
+
 void main() {
   testWidgets('home presents polished slideshow labels', (tester) async {
+    useTallTestSurface(tester);
+    await tester.pumpWidget(const NotuaApp());
     await tester.pumpWidget(const NotuaApp());
     expect(find.text('Notua'), findsOneWidget);
     expect(find.text('거실 액자 · 연결됨'), findsOneWidget);
@@ -52,6 +62,8 @@ void main() {
   });
 
   testWidgets('editor has supported adjustment controls', (tester) async {
+    useTallTestSurface(tester);
+    await tester.pumpWidget(const MaterialApp(home: PhotoEditorScreen()));
     await tester.pumpWidget(const MaterialApp(home: PhotoEditorScreen()));
     expect(find.text('사진 편집'), findsOneWidget);
     expect(find.text('밝기'), findsOneWidget);
@@ -61,26 +73,18 @@ void main() {
   });
 
   testWidgets('each editor slider changes the preview filter', (tester) async {
+    useTallTestSurface(tester);
     await tester.pumpWidget(const MaterialApp(home: PhotoEditorScreen()));
-
-    final sliderKeys = [
-      PhotoEditorScreen.brightnessSliderKey,
-      PhotoEditorScreen.contrastSliderKey,
-      PhotoEditorScreen.saturationSliderKey,
-    ];
-
-    for (final sliderKey in sliderKeys) {
+    await tester.pumpWidget(const MaterialApp(home: PhotoEditorScreen()));
+    for (var index = 0; index < 3; index++) {
       final before = tester
           .widget<ColorFiltered>(find.byType(ColorFiltered))
           .colorFilter;
-
-      await tester.drag(find.byKey(sliderKey), const Offset(45, 0));
+      await tester.drag(find.byType(Slider).at(index), const Offset(45, 0));
       await tester.pump();
-
       final after = tester
           .widget<ColorFiltered>(find.byType(ColorFiltered))
           .colorFilter;
-
       expect(after, isNot(equals(before)));
     }
   });

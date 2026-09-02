@@ -18,8 +18,9 @@ class NotuaApp extends StatelessWidget {
   Widget build(BuildContext context) {
     const ink = Color(0xff203f60);
     final routes = <String, WidgetBuilder>{};
-    if (kDebugMode)
+    if (kDebugMode) {
       routes['/developer/transfer'] = (_) => const TransferScreen();
+    }
     return MaterialApp(
       title: 'Notua',
       debugShowCheckedModeBanner: false,
