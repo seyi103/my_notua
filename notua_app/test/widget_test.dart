@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -48,6 +47,7 @@ class RetrySynchronizationService implements SynchronizationService {
 class ControlledImagePipeline extends ImagePipeline {
   final calls = <PhotoEditParameters>[];
   final completers = <Completer<ProcessedImage>>[];
+  void Function(int callCount)? onProcessStarted;
 
   @override
   Future<ProcessedImage> process(Uint8List source, PhotoEditParameters edit,
@@ -55,6 +55,7 @@ class ControlledImagePipeline extends ImagePipeline {
     calls.add(edit);
     final completer = Completer<ProcessedImage>();
     completers.add(completer);
+    onProcessStarted?.call(completers.length);
     return completer.future;
   }
 
@@ -71,6 +72,49 @@ class FakePhotoPicker implements PhotoPickerService {
   Future<SelectedPhoto?> pickPhoto() async => photo;
   @override
   Future<SelectedPhoto?> retrieveLostPhoto() async => lostPhoto;
+}
+
+class MemoryPhotoCache implements PhotoCache {
+  final files = <String, Uint8List>{};
+  int _generation = 0;
+
+  @override
+  Uint8List? bytesForPath(String path) => files[path];
+
+  @override
+  Future<String> storeSource(
+    String id,
+    String extension,
+    Uint8List bytes,
+  ) async {
+    final path = 'memory://$id-source.$extension';
+    files[path] = Uint8List.fromList(bytes);
+    return path;
+  }
+
+  @override
+  Future<CachedOutputs> replaceOutputs(
+    String id,
+    Uint8List preview,
+    Uint8List y8, {
+    String? oldPreviewPath,
+    String? oldBinPath,
+  }) async {
+    final generation = _generation++;
+    final previewPath = 'memory://$id-$generation-preview.png';
+    final binPath = 'memory://$id-$generation-frame.bin';
+    files[previewPath] = Uint8List.fromList(preview);
+    files[binPath] = Uint8List.fromList(y8);
+    await deletePaths([oldPreviewPath, oldBinPath]);
+    return CachedOutputs(previewPath: previewPath, binPath: binPath);
+  }
+
+  @override
+  Future<void> deletePaths(Iterable<String?> paths) async {
+    for (final path in paths.whereType<String>()) {
+      files.remove(path);
+    }
+  }
 }
 
 class ImmediateImagePipeline extends ImagePipeline {
@@ -219,14 +263,13 @@ void main() {
 
   testWidgets('fake selected photo becomes editor preview and real home thumbnail', (tester) async {
     useTallTestSurface(tester);
-    final cacheDirectory = await Directory.systemTemp.createTemp('notua-widget-cache');
-    addTearDown(() => cacheDirectory.delete(recursive: true));
+    final cache = MemoryPhotoCache();
     final draft = PlaylistDraft(slides: const []);
     await tester.pumpWidget(MaterialApp(home: HomeScreen(
       draft: draft,
       syncService: EmptySynchronizationService(),
       photoPicker: FakePhotoPicker(SelectedPhoto(name: 'fixture.png', bytes: previewBytes(0xff224466), extension: 'png')),
-      photoCache: TemporaryPhotoCache(root: cacheDirectory),
+      photoCache: cache,
       imagePipeline: ImmediateImagePipeline(),
     )));
     await tester.tap(find.text('사진 추가'));
@@ -237,15 +280,26 @@ void main() {
     expect(find.text('편집 보기'), findsOneWidget);
     await tester.tap(find.text('편집 보기'));
     await tester.tap(find.text('슬라이드에 추가'));
-    await pumpAsyncWork(tester, times: 20);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump();
     expect(draft.slides, hasLength(1));
+    expect(find.text('사진 편집'), findsNothing);
     expect(find.byType(Image), findsWidgets);
-    expect(File(draft.slides.single.previewPath!).existsSync(), isTrue);
+    expect(cache.bytesForPath(draft.slides.single.previewPath!), isNotNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
   });
 
   testWidgets('final conversion freezes controls and captures one edit value', (tester) async {
     useTallTestSurface(tester);
     final pipeline = ControlledImagePipeline();
+    final finalStarted = Completer<void>();
+    pipeline.onProcessStarted = (callCount) {
+      if (callCount == 2) {
+        finalStarted.complete();
+      }
+    };
     await tester.pumpWidget(MaterialApp(home: PhotoEditorScreen(
       photo: SelectedPhoto(name: 'fixture.png', bytes: previewBytes(0xff224466), extension: 'png'),
       pipeline: pipeline,
@@ -261,7 +315,8 @@ void main() {
     await tester.drag(find.byKey(PhotoEditorScreen.brightnessSliderKey), const Offset(100, 0));
     expect(pipeline.calls.last, same(captured));
     pipeline.completers.single.complete(controlledResult(0xff334455));
-    await pumpAsyncWork(tester, times: 3);
+    await tester.pump();
+    expect(finalStarted.isCompleted, isTrue);
     expect(pipeline.completers, hasLength(2));
     expect(pipeline.calls.last, same(captured));
     pipeline.completers.last.complete(controlledResult(0xff445566, full: true));

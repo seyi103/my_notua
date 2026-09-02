@@ -109,6 +109,15 @@ class _HomeScreenState extends State<HomeScreen> {
         photo.extension,
         photo.bytes,
       );
+    } else if (slide.sourcePath case final cachedSource?) {
+      final sourceBytes = operationCache.bytesForPath(cachedSource);
+      if (sourceBytes != null) {
+        photo = SelectedPhoto(
+          name: slide.sourceName ?? 'photo',
+          bytes: sourceBytes,
+          extension: 'png',
+        );
+      }
     }
     if (!mounted) {
       if (sourcePath != null) {
@@ -192,7 +201,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Stack(
                     children: [
                       Positioned.fill(
-                        child: _SlidePhoto(slide: selected),
+                        child: _SlidePhoto(slide: selected, cache: _photoCache),
                       ),
                       Positioned(
                         right: 12,
@@ -234,7 +243,11 @@ class _HomeScreenState extends State<HomeScreen> {
                     children: [
                       for (var i = 0; i < widget.draft.slides.length; i++)
                         Expanded(
-                          child: _Thumbnail(draft: widget.draft, index: i),
+                          child: _Thumbnail(
+                            draft: widget.draft,
+                            index: i,
+                            cache: _photoCache,
+                          ),
                         ),
                       if (widget.draft.slides.length < PlaylistDraft.maxSlides)
                         Expanded(
@@ -295,9 +308,14 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class _Thumbnail extends StatelessWidget {
-  const _Thumbnail({required this.draft, required this.index});
+  const _Thumbnail({
+    required this.draft,
+    required this.index,
+    required this.cache,
+  });
   final PlaylistDraft draft;
   final int index;
+  final PhotoCache cache;
   @override
   Widget build(BuildContext context) {
     final slide = draft.slides[index];
@@ -324,7 +342,11 @@ class _Thumbnail extends StatelessWidget {
                       ),
                       child: Padding(
                         padding: const EdgeInsets.all(2),
-                        child: _SlidePhoto(slide: slide, radius: 10),
+                        child: _SlidePhoto(
+                          slide: slide,
+                          cache: cache,
+                          radius: 10,
+                        ),
                       ),
                     ),
                   ),
@@ -368,17 +390,34 @@ class _Thumbnail extends StatelessWidget {
 }
 
 class _SlidePhoto extends StatelessWidget {
-  const _SlidePhoto({required this.slide, this.radius = 20});
+  const _SlidePhoto({
+    required this.slide,
+    required this.cache,
+    this.radius = 20,
+  });
   final SlideItem slide;
+  final PhotoCache cache;
   final double radius;
   @override
-  Widget build(BuildContext context) => ClipRRect(
-    borderRadius: BorderRadius.circular(radius),
-    child: slide.previewPath == null
-      ? PhotoPlaceholder(color: slide.color, radius: radius)
-      : Image.file(File(slide.previewPath!), fit: BoxFit.cover, gaplessPlayback: true,
-          errorBuilder: (_, _, _) => const Center(child: Icon(Icons.broken_image_outlined))),
-  );
+  Widget build(BuildContext context) {
+    final path = slide.previewPath;
+    final cachedBytes = path == null ? null : cache.bytesForPath(path);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: path == null
+          ? PhotoPlaceholder(color: slide.color, radius: radius)
+          : cachedBytes != null
+              ? Image.memory(cachedBytes, fit: BoxFit.cover, gaplessPlayback: true)
+              : Image.file(
+                  File(path),
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                  errorBuilder: (_, _, _) => const Center(
+                    child: Icon(Icons.broken_image_outlined),
+                  ),
+                ),
+    );
+  }
 }
 
 class _AddCard extends StatelessWidget {

@@ -98,18 +98,18 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     if (_previewWork != null || saving) {
       return;
     }
-    late final Future<void> work;
-    work = _drainPreviewQueue();
-    _previewWork = work;
-    work.whenComplete(() {
-      if (!identical(_previewWork, work)) {
-        return;
-      }
+    _previewWork = _runPreviewWorker();
+  }
+
+  Future<void> _runPreviewWorker() async {
+    try {
+      await _drainPreviewQueue();
+    } finally {
       _previewWork = null;
       if (_pendingPreview != null && mounted && !saving) {
         _startPreviewWorker();
       }
-    });
+    }
   }
 
   Future<void> _drainPreviewQueue() async {
@@ -154,13 +154,19 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   }
 
   Future<void> _save() async {
+    if (saving) {
+      return;
+    }
     _debounce?.cancel();
     final captured = value;
     ++_generation;
     _pendingPreview = null;
     setState(() => saving = true);
     try {
-      await _previewWork;
+      final activePreview = _previewWork;
+      if (activePreview != null) {
+        await activePreview;
+      }
       final result = await pipeline.process(source, captured);
       if (mounted) {
         Navigator.pop(

@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 abstract interface class PhotoCache {
+  Uint8List? bytesForPath(String path);
   Future<String> storeSource(String id, String extension, Uint8List bytes);
   Future<CachedOutputs> replaceOutputs(
     String id,
@@ -19,6 +20,9 @@ abstract interface class PhotoCache {
 class TemporaryPhotoCache implements PhotoCache {
   TemporaryPhotoCache({Directory? root}) : _root = root;
   Directory? _root;
+
+  @override
+  Uint8List? bytesForPath(String path) => null;
 
   Future<Directory> get root async {
     final existing = _root;
