@@ -22,6 +22,14 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   @override
+  void didUpdateWidget(covariant HomeScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.draft == widget.draft) return;
+    oldWidget.draft.removeListener(_refresh);
+    widget.draft.addListener(_refresh);
+  }
+
+  @override
   void dispose() {
     widget.draft.removeListener(_refresh);
     super.dispose();
@@ -156,7 +164,9 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 22),
               FilledButton(
-                onPressed: widget.draft.syncPlan.hasChanges
+                onPressed:
+                    widget.draft.slides.isNotEmpty &&
+                        widget.draft.syncPlan.hasChanges
                     ? () => Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -363,7 +373,10 @@ class _IntervalTile extends StatelessWidget {
   final int value;
   final ValueChanged<int> onChanged;
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) {
+    const presets = [1, 5, 10, 30];
+    final values = {...presets, value}.toList()..sort();
+    return Container(
     decoration: BoxDecoration(
       color: Colors.white,
       borderRadius: BorderRadius.circular(18),
@@ -374,16 +387,14 @@ class _IntervalTile extends StatelessWidget {
       trailing: DropdownButton<int>(
         value: value,
         underline: const SizedBox(),
-        items: const [
-          1,
-          5,
-          10,
-          30,
-        ].map((v) => DropdownMenuItem(value: v, child: Text('$v분마다'))).toList(),
+        items: values
+            .map((v) => DropdownMenuItem(value: v, child: Text('$v분마다')))
+            .toList(),
         onChanged: (v) {
           if (v != null) onChanged(v);
         },
       ),
     ),
-  );
+    );
+  }
 }

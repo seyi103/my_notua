@@ -67,16 +67,21 @@ class DevicePlaylistSnapshot {
 
 @immutable
 class SyncPlan {
-  const SyncPlan({
-    required this.uploads,
-    required this.deletedIds,
-    required this.targetSlideIds,
+  SyncPlan({
+    required List<SlideItem> uploads,
+    required List<String> deletedIds,
+    required List<SlideItem> targetSlides,
+    required List<String> targetSlideIds,
     required this.targetIntervalMinutes,
     required this.orderChanged,
     required this.intervalChanged,
-  });
+  }) : uploads = List.unmodifiable(uploads),
+       deletedIds = List.unmodifiable(deletedIds),
+       targetSlides = List.unmodifiable(targetSlides),
+       targetSlideIds = List.unmodifiable(targetSlideIds);
   final List<SlideItem> uploads;
   final List<String> deletedIds;
+  final List<SlideItem> targetSlides;
   final List<String> targetSlideIds;
   final int targetIntervalMinutes;
   final bool orderChanged;
@@ -117,6 +122,7 @@ class PlaylistDraft extends ChangeNotifier {
   DevicePlaylistSnapshot _snapshot;
   String? _selectedId;
   int _nextId;
+  SyncPlan? _pendingSyncPlan;
 
   static int _deriveNextId(List<SlideItem> slides) {
     var highest = 0;
@@ -144,6 +150,7 @@ class PlaylistDraft extends ChangeNotifier {
     return SyncPlan(
       uploads: uploads,
       deletedIds: oldIds.where((id) => !currentIds.contains(id)).toList(),
+      targetSlides: _slides,
       targetSlideIds: currentIds,
       targetIntervalMinutes: _intervalMinutes,
       orderChanged: !listEquals(oldIds, currentIds),
@@ -152,6 +159,7 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   bool add({int color = 0xff9a8881}) {
+    if (_pendingSyncPlan != null) return false;
     if (_slides.length >= maxSlides) return false;
     final item = SlideItem(id: 'new-${_nextId++}', color: color);
     _slides.add(item);
@@ -161,6 +169,7 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void remove(String id) {
+    if (_pendingSyncPlan != null) return;
     final index = _slides.indexWhere((item) => item.id == id);
     if (index < 0) return;
     _slides.removeAt(index);
@@ -173,6 +182,7 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void select(String id) {
+    if (_pendingSyncPlan != null) return;
     if (_slides.any((item) => item.id == id)) {
       _selectedId = id;
       notifyListeners();
@@ -180,6 +190,7 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void reorder(int oldIndex, int newIndex) {
+    if (_pendingSyncPlan != null) return;
     if (oldIndex == newIndex ||
         oldIndex < 0 ||
         newIndex < 0 ||
@@ -193,6 +204,7 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void edit(String id, PhotoEditParameters edit) {
+    if (_pendingSyncPlan != null) return;
     final index = _slides.indexWhere((item) => item.id == id);
     if (index < 0) return;
     _slides[index] = _slides[index].copyWith(edit: edit);
@@ -200,16 +212,32 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void setInterval(int minutes) {
+    if (_pendingSyncPlan != null) return;
     if (_intervalMinutes == minutes) return;
     _intervalMinutes = minutes;
     notifyListeners();
   }
 
-  void markSynchronized() {
+  SyncPlan beginSynchronization() {
+    if (_slides.isEmpty) {
+      throw StateError('An empty playlist cannot be synchronized.');
+    }
+    return _pendingSyncPlan ??= syncPlan;
+  }
+
+  void markSynchronized(SyncPlan plan) {
+    if (!identical(plan, _pendingSyncPlan)) return;
     _snapshot = DevicePlaylistSnapshot(
-      slides: List.of(_slides),
-      intervalMinutes: _intervalMinutes,
+      slides: List.of(plan.targetSlides),
+      intervalMinutes: plan.targetIntervalMinutes,
     );
+    _pendingSyncPlan = null;
+    notifyListeners();
+  }
+
+  void abortSynchronization(SyncPlan plan) {
+    if (!identical(plan, _pendingSyncPlan)) return;
+    _pendingSyncPlan = null;
     notifyListeners();
   }
 }

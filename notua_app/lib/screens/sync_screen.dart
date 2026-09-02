@@ -16,7 +16,7 @@ class SyncScreen extends StatefulWidget {
 }
 
 class _SyncScreenState extends State<SyncScreen> {
-  late final SyncPlan plan = widget.draft.syncPlan;
+  late final SyncPlan plan;
   final Set<SyncStage> completedStages = {};
   StreamSubscription<SyncUpdate>? subscription;
   double progress = 0;
@@ -26,6 +26,7 @@ class _SyncScreenState extends State<SyncScreen> {
   @override
   void initState() {
     super.initState();
+    plan = widget.draft.beginSynchronization();
     _start();
   }
 
@@ -45,14 +46,15 @@ class _SyncScreenState extends State<SyncScreen> {
             setState(() {
               progress = event.progress;
               completedStages.add(event.stage);
-              if (event.progress == 1) {
-                complete = true;
-                widget.draft.markSynchronized();
-              }
             });
           },
           onError: (Object value) {
             if (mounted) setState(() => error = value);
+          },
+          onDone: () {
+            if (!mounted || error != null) return;
+            widget.draft.markSynchronized(plan);
+            setState(() => complete = true);
           },
         );
   }
@@ -90,14 +92,16 @@ class _SyncScreenState extends State<SyncScreen> {
   ];
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('액자에 적용'), centerTitle: true),
-    body: SafeArea(
-      child: LayoutBuilder(
-        builder: (context, constraints) => SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
+  Widget build(BuildContext context) => PopScope(
+    canPop: complete,
+    child: Scaffold(
+      appBar: AppBar(title: const Text('액자에 적용'), centerTitle: true),
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
               minHeight: (constraints.maxHeight - 48)
                   .clamp(0, double.infinity)
                   .toDouble(),
@@ -181,11 +185,22 @@ class _SyncScreenState extends State<SyncScreen> {
                         ),
                         child: Text(error != null ? '다시 시도' : '완료'),
                       ),
+                      if (error != null) ...[
+                        const SizedBox(height: 8),
+                        TextButton(
+                          onPressed: () {
+                            widget.draft.abortSynchronization(plan);
+                            Navigator.pop(context);
+                          },
+                          child: const Text('변경사항으로 돌아가기'),
+                        ),
+                      ],
                     ],
                   ),
                 ),
               ),
             ),
+          ),
           ),
         ),
       ),
