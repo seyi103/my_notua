@@ -1,29 +1,53 @@
 import 'package:flutter/foundation.dart';
 
 @immutable
+class NormalizedCrop {
+  const NormalizedCrop({this.left = 0, this.top = 0, this.width = 1, this.height = 1});
+  final double left, top, width, height;
+  NormalizedCrop get clamped {
+    final l = left.clamp(0.0, .999).toDouble();
+    final t = top.clamp(0.0, .999).toDouble();
+    return NormalizedCrop(
+      left: l,
+      top: t,
+      width: width.clamp(.001, 1 - l).toDouble(),
+      height: height.clamp(.001, 1 - t).toDouble(),
+    );
+  }
+  @override
+  bool operator ==(Object other) => other is NormalizedCrop && left == other.left && top == other.top && width == other.width && height == other.height;
+  @override
+  int get hashCode => Object.hash(left, top, width, height);
+}
+
+@immutable
 class PhotoEditParameters {
   const PhotoEditParameters({
     this.brightness = -18,
     this.contrast = 0.5,
     this.saturation = 1,
     this.quarterTurns = 0,
+    this.crop = const NormalizedCrop(),
   });
 
   final double brightness;
   final double contrast;
   final double saturation;
   final int quarterTurns;
+  final NormalizedCrop crop;
 
   PhotoEditParameters copyWith({
     double? brightness,
     double? contrast,
     double? saturation,
     int? quarterTurns,
+    NormalizedCrop? crop,
   }) => PhotoEditParameters(
     brightness: brightness ?? this.brightness,
     contrast: contrast ?? this.contrast,
     saturation: saturation ?? this.saturation,
     quarterTurns: quarterTurns ?? this.quarterTurns,
+    crop: crop ?? this.crop,
   );
 
   @override
@@ -32,11 +56,12 @@ class PhotoEditParameters {
       brightness == other.brightness &&
       contrast == other.contrast &&
       saturation == other.saturation &&
-      quarterTurns == other.quarterTurns;
+      quarterTurns == other.quarterTurns &&
+      crop == other.crop;
 
   @override
   int get hashCode =>
-      Object.hash(brightness, contrast, saturation, quarterTurns);
+      Object.hash(brightness, contrast, saturation, quarterTurns, crop);
 }
 
 @immutable
@@ -45,14 +70,24 @@ class SlideItem {
     required this.id,
     required this.color,
     this.edit = const PhotoEditParameters(),
+    this.sourceName,
+    this.sourcePath,
+    this.previewPath,
+    this.binPath,
   });
 
   final String id;
   final int color;
   final PhotoEditParameters edit;
+  final String? sourceName;
+  final String? sourcePath;
+  final String? previewPath;
+  final String? binPath;
 
-  SlideItem copyWith({PhotoEditParameters? edit}) =>
-      SlideItem(id: id, color: color, edit: edit ?? this.edit);
+  SlideItem copyWith({PhotoEditParameters? edit, String? previewPath, String? binPath}) =>
+      SlideItem(id: id, color: color, edit: edit ?? this.edit, sourceName: sourceName,
+        sourcePath: sourcePath, previewPath: previewPath ?? this.previewPath,
+        binPath: binPath ?? this.binPath);
 }
 
 @immutable
@@ -129,7 +164,9 @@ class PlaylistDraft extends ChangeNotifier {
     for (final slide in slides) {
       final match = _generatedIdPattern.firstMatch(slide.id);
       final value = match == null ? null : int.tryParse(match.group(1)!);
-      if (value != null && value > highest) highest = value;
+      if (value != null && value > highest) {
+        highest = value;
+      }
     }
     return highest + 1;
   }
@@ -159,8 +196,12 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   bool add({int color = 0xff9a8881}) {
-    if (_pendingSyncPlan != null) return false;
-    if (_slides.length >= maxSlides) return false;
+    if (_pendingSyncPlan != null) {
+      return false;
+    }
+    if (_slides.length >= maxSlides) {
+      return false;
+    }
     final item = SlideItem(id: 'new-${_nextId++}', color: color);
     _slides.add(item);
     _selectedId = item.id;
@@ -168,10 +209,36 @@ class PlaylistDraft extends ChangeNotifier {
     return true;
   }
 
+  String? reservePhotoId() {
+    if (_pendingSyncPlan != null || _slides.length >= maxSlides) {
+      return null;
+    }
+    return 'new-${_nextId++}';
+  }
+
+  bool addPhoto({required String id, required String name, required String sourcePath,
+      required PhotoEditParameters edit, required String previewPath,
+      required String binPath}) {
+    if (_pendingSyncPlan != null || _slides.length >= maxSlides) {
+      return false;
+    }
+    final item = SlideItem(id: id, color: 0xff9a8881,
+      sourceName: name, sourcePath: sourcePath, edit: edit,
+      previewPath: previewPath, binPath: binPath);
+    _slides.add(item);
+    _selectedId = item.id;
+    notifyListeners();
+    return true;
+  }
+
   void remove(String id) {
-    if (_pendingSyncPlan != null) return;
+    if (_pendingSyncPlan != null) {
+      return;
+    }
     final index = _slides.indexWhere((item) => item.id == id);
-    if (index < 0) return;
+    if (index < 0) {
+      return;
+    }
     _slides.removeAt(index);
     if (_selectedId == id) {
       _selectedId = _slides.isEmpty
@@ -182,7 +249,9 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void select(String id) {
-    if (_pendingSyncPlan != null) return;
+    if (_pendingSyncPlan != null) {
+      return;
+    }
     if (_slides.any((item) => item.id == id)) {
       _selectedId = id;
       notifyListeners();
@@ -190,7 +259,9 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void reorder(int oldIndex, int newIndex) {
-    if (_pendingSyncPlan != null) return;
+    if (_pendingSyncPlan != null) {
+      return;
+    }
     if (oldIndex == newIndex ||
         oldIndex < 0 ||
         newIndex < 0 ||
@@ -203,17 +274,25 @@ class PlaylistDraft extends ChangeNotifier {
     notifyListeners();
   }
 
-  void edit(String id, PhotoEditParameters edit) {
-    if (_pendingSyncPlan != null) return;
+  void edit(String id, PhotoEditParameters edit, {String? previewPath, String? binPath}) {
+    if (_pendingSyncPlan != null) {
+      return;
+    }
     final index = _slides.indexWhere((item) => item.id == id);
-    if (index < 0) return;
-    _slides[index] = _slides[index].copyWith(edit: edit);
+    if (index < 0) {
+      return;
+    }
+    _slides[index] = _slides[index].copyWith(edit: edit, previewPath: previewPath, binPath: binPath);
     notifyListeners();
   }
 
   void setInterval(int minutes) {
-    if (_pendingSyncPlan != null) return;
-    if (_intervalMinutes == minutes) return;
+    if (_pendingSyncPlan != null) {
+      return;
+    }
+    if (_intervalMinutes == minutes) {
+      return;
+    }
     _intervalMinutes = minutes;
     notifyListeners();
   }
@@ -226,7 +305,9 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void markSynchronized(SyncPlan plan) {
-    if (!identical(plan, _pendingSyncPlan)) return;
+    if (!identical(plan, _pendingSyncPlan)) {
+      return;
+    }
     _snapshot = DevicePlaylistSnapshot(
       slides: List.of(plan.targetSlides),
       intervalMinutes: plan.targetIntervalMinutes,
@@ -236,7 +317,9 @@ class PlaylistDraft extends ChangeNotifier {
   }
 
   void abortSynchronization(SyncPlan plan) {
-    if (!identical(plan, _pendingSyncPlan)) return;
+    if (!identical(plan, _pendingSyncPlan)) {
+      return;
+    }
     _pendingSyncPlan = null;
     notifyListeners();
   }

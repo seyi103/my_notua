@@ -24,7 +24,9 @@ class _TransferScreenState extends State<TransferScreen> {
     super.initState();
     sub = progress.receiveBroadcastStream().listen((dynamic e) {
       final m = Map<String, dynamic>.from(e);
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
       setState(() {
         if (m['type'] == 'status') {
           status = m['message'] as String;
@@ -55,7 +57,9 @@ class _TransferScreenState extends State<TransferScreen> {
         });
       }
     } catch (e) {
-      if (mounted) setState(() => status = '$e');
+      if (mounted) {
+        setState(() => status = '$e');
+      }
     }
   }
 
@@ -73,21 +77,29 @@ class _TransferScreenState extends State<TransferScreen> {
         });
       }
     } catch (e) {
-      if (mounted) setState(() => status = '$e');
+      if (mounted) {
+        setState(() => status = '$e');
+      }
     }
   }
 
   Future<void> upload() async {
-    if (path == null || candidateSlot == null) return;
+    if (path == null || candidateSlot == null) {
+      return;
+    }
     setState(
       () => status =
           'Uploading to dedicated spike file using candidate slot $candidateSlot…',
     );
     try {
       final r = await method.invokeMethod('upload', {'path': path});
-      if (mounted) setState(() => status = 'HTTP / CRC result: $r');
+      if (mounted) {
+        setState(() => status = 'HTTP / CRC result: $r');
+      }
     } catch (e) {
-      if (mounted) setState(() => status = '$e');
+      if (mounted) {
+        setState(() => status = '$e');
+      }
     }
   }
 
