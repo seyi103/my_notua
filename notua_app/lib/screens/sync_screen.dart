@@ -16,43 +16,69 @@ class SyncScreen extends StatefulWidget {
 }
 
 class _SyncScreenState extends State<SyncScreen> {
-  late final SyncPlan plan = widget.draft.syncPlan;
+  late final SyncPlan plan;
   final Set<SyncStage> completedStages = {};
   StreamSubscription<SyncUpdate>? subscription;
+
   double progress = 0;
   Object? error;
   bool complete = false;
+  bool streamFailed = false;
+  bool sawTerminalUpdate = false;
 
   @override
   void initState() {
     super.initState();
+    plan = widget.draft.beginSynchronization();
     _start();
   }
 
   void _start() {
     subscription?.cancel();
+
     setState(() {
       progress = 0;
       error = null;
       complete = false;
+      streamFailed = false;
+      sawTerminalUpdate = false;
       completedStages.clear();
     });
+
     subscription = widget.service
         .synchronize(plan)
         .listen(
           (event) {
             if (!mounted) return;
+
+            if (event.stage == SyncStage.disconnect && event.progress >= 1) {
+              sawTerminalUpdate = true;
+            }
+
             setState(() {
               progress = event.progress;
               completedStages.add(event.stage);
-              if (event.progress == 1) {
-                complete = true;
-                widget.draft.markSynchronized();
-              }
             });
           },
           onError: (Object value) {
-            if (mounted) setState(() => error = value);
+            streamFailed = true;
+
+            if (mounted) {
+              setState(() => error = value);
+            }
+          },
+          onDone: () {
+            if (!mounted || streamFailed) return;
+
+            if (!sawTerminalUpdate) {
+              setState(() {
+                error = const SyncException('동기화가 완료 신호 없이 종료됐어요. 다시 시도해 주세요.');
+              });
+              return;
+            }
+
+            widget.draft.markSynchronized(plan);
+            setState(() => complete = true);
           },
         );
   }
@@ -60,6 +86,11 @@ class _SyncScreenState extends State<SyncScreen> {
   @override
   void dispose() {
     subscription?.cancel();
+
+    if (!complete) {
+      widget.draft.abortSynchronization(plan);
+    }
+
     super.dispose();
   }
 
@@ -90,98 +121,111 @@ class _SyncScreenState extends State<SyncScreen> {
   ];
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('액자에 적용'), centerTitle: true),
-    body: SafeArea(
-      child: LayoutBuilder(
-        builder: (context, constraints) => SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              minHeight: (constraints.maxHeight - 48)
-                  .clamp(0, double.infinity)
-                  .toDouble(),
-            ),
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 520),
-                child: Container(
-                  padding: const EdgeInsets.all(28),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(22),
-                    boxShadow: const [
-                      BoxShadow(color: Color(0x10000000), blurRadius: 20),
-                    ],
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      CircleAvatar(
-                        radius: 34,
-                        backgroundColor: error != null
-                            ? const Color(0xffffe6df)
-                            : const Color(0xff203f60),
-                        child: Icon(
-                          error != null
-                              ? Icons.refresh
-                              : complete
-                              ? Icons.check
-                              : Icons.sync,
-                          color: error != null
-                              ? Colors.deepOrange
-                              : Colors.white,
-                          size: 34,
-                        ),
-                      ),
-                      const SizedBox(height: 18),
-                      Text(
-                        error != null
-                            ? '적용하지 못했어요'
-                            : complete
-                            ? '액자에 적용했어요'
-                            : '변경사항을 적용하고 있어요',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        error != null
-                            ? '변경사항은 그대로 보관했어요. 다시 시도해 주세요.'
-                            : '변경된 사진 ${plan.changedImageCount}장과 설정을 업데이트해요',
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 24),
-                      LinearProgressIndicator(
-                        value: progress,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      const SizedBox(height: 7),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: Text('${(progress * 100).round()}%'),
-                      ),
-                      const SizedBox(height: 20),
-                      ..._steps,
-                      const SizedBox(height: 22),
-                      FilledButton(
-                        onPressed: error != null
-                            ? _start
-                            : complete
-                            ? () => Navigator.pop(context)
-                            : null,
-                        style: FilledButton.styleFrom(
-                          minimumSize: const Size.fromHeight(58),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(17),
+  Widget build(BuildContext context) => PopScope(
+    canPop: complete,
+    child: Scaffold(
+      appBar: AppBar(title: const Text('액자에 적용'), centerTitle: true),
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minHeight: (constraints.maxHeight - 48)
+                    .clamp(0, double.infinity)
+                    .toDouble(),
+              ),
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 520),
+                  child: Container(
+                    padding: const EdgeInsets.all(28),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(22),
+                      boxShadow: const [
+                        BoxShadow(color: Color(0x10000000), blurRadius: 20),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircleAvatar(
+                          radius: 34,
+                          backgroundColor: error != null
+                              ? const Color(0xffffe6df)
+                              : const Color(0xff203f60),
+                          child: Icon(
+                            error != null
+                                ? Icons.refresh
+                                : complete
+                                ? Icons.check
+                                : Icons.sync,
+                            color: error != null
+                                ? Colors.deepOrange
+                                : Colors.white,
+                            size: 34,
                           ),
                         ),
-                        child: Text(error != null ? '다시 시도' : '완료'),
-                      ),
-                    ],
+                        const SizedBox(height: 18),
+                        Text(
+                          error != null
+                              ? '적용하지 못했어요'
+                              : complete
+                              ? '액자에 적용했어요'
+                              : '변경사항을 적용하고 있어요',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          error != null
+                              ? '변경사항은 그대로 보관했어요. 다시 시도해 주세요.'
+                              : '변경된 사진 ${plan.changedImageCount}장과 설정을 업데이트해요',
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 24),
+                        LinearProgressIndicator(
+                          value: progress,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        const SizedBox(height: 7),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Text('${(progress * 100).round()}%'),
+                        ),
+                        const SizedBox(height: 20),
+                        ..._steps,
+                        const SizedBox(height: 22),
+                        FilledButton(
+                          onPressed: error != null
+                              ? _start
+                              : complete
+                              ? () => Navigator.pop(context)
+                              : null,
+                          style: FilledButton.styleFrom(
+                            minimumSize: const Size.fromHeight(58),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(17),
+                            ),
+                          ),
+                          child: Text(error != null ? '다시 시도' : '완료'),
+                        ),
+                        if (error != null) ...[
+                          const SizedBox(height: 8),
+                          TextButton(
+                            onPressed: () {
+                              widget.draft.abortSynchronization(plan);
+                              Navigator.pop(context);
+                            },
+                            child: const Text('변경사항으로 돌아가기'),
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
                 ),
               ),

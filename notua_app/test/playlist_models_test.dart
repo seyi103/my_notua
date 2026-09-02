@@ -79,10 +79,16 @@ void main() {
       draft.setInterval(30);
       draft.edit('a', const PhotoEditParameters(saturation: 2));
       expect(draft.syncPlan.hasChanges, isTrue);
-      draft.markSynchronized();
+      final plan = draft.beginSynchronization();
+      draft.markSynchronized(plan);
       expect(draft.syncPlan.hasChanges, isFalse);
       expect(draft.syncPlan.targetSlideIds, ['b', 'a']);
       expect(draft.syncPlan.targetIntervalMinutes, 30);
+    });
+
+    test('empty target cannot begin synchronization', () {
+      final draft = PlaylistDraft(slides: const []);
+      expect(draft.beginSynchronization, throwsStateError);
     });
 
     test('failed sync preserves draft', () async {
