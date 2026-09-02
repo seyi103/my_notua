@@ -108,6 +108,24 @@ void main() {
   });
 
   test('invalid images fail clearly', () {
-    expect(() => ImagePipeline.processSync(Uint8List.fromList([1, 2, 3]), const PhotoEditParameters()), throwsA(isA<ImageProcessingException>()));
+    final invalid = Uint8List.fromList([1, 2, 3]);
+    expect(
+      () => ImagePipeline.defaultCrop(invalid, 0),
+      throwsA(isA<ImageProcessingException>()),
+    );
+    expect(
+      () => ImagePipeline.originalPreviewSync(
+        invalid,
+        const PhotoEditParameters(),
+      ),
+      throwsA(isA<ImageProcessingException>()),
+    );
+    expect(
+      () => ImagePipeline.processSync(
+        invalid,
+        const PhotoEditParameters(),
+      ),
+      throwsA(isA<ImageProcessingException>()),
+    );
   });
 }

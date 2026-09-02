@@ -30,12 +30,22 @@ class ImagePipeline {
     [63, 31, 55, 23, 61, 29, 53, 21],
   ];
 
-  static NormalizedCrop defaultCrop(Uint8List source, int quarterTurns) {
-    final sourceImage = img.decodeImage(source);
-    if (sourceImage == null) {
+  static img.Image _decode(Uint8List source) {
+    try {
+      final sourceImage = img.decodeImage(source);
+      if (sourceImage == null) {
+        throw const ImageProcessingException('Invalid JPEG or PNG image.');
+      }
+      return sourceImage;
+    } on ImageProcessingException {
+      rethrow;
+    } on Object {
       throw const ImageProcessingException('Invalid JPEG or PNG image.');
     }
-    final decoded = img.bakeOrientation(sourceImage);
+  }
+
+  static NormalizedCrop defaultCrop(Uint8List source, int quarterTurns) {
+    final decoded = img.bakeOrientation(_decode(source));
     flattenOnWhite(decoded);
     final imageWidth = quarterTurns.isOdd ? decoded.height : decoded.width;
     final imageHeight = quarterTurns.isOdd ? decoded.width : decoded.height;
@@ -62,11 +72,7 @@ class ImagePipeline {
       Isolate.run(() => originalPreviewSync(source, edit));
 
   static Uint8List originalPreviewSync(Uint8List source, PhotoEditParameters edit) {
-    final sourceImage = img.decodeImage(source);
-    if (sourceImage == null) {
-      throw const ImageProcessingException('Invalid JPEG or PNG image.');
-    }
-    var decoded = img.bakeOrientation(sourceImage);
+    var decoded = img.bakeOrientation(_decode(source));
     flattenOnWhite(decoded);
     for (var i = 0; i < edit.quarterTurns % 4; i++) {
       decoded = img.copyRotate(decoded, angle: 90);
@@ -86,11 +92,7 @@ class ImagePipeline {
     PhotoEditParameters edit, {
     bool fullSize = true,
   }) {
-    final sourceImage = img.decodeImage(source);
-    if (sourceImage == null) {
-      throw const ImageProcessingException('Invalid JPEG or PNG image.');
-    }
-    var decoded = img.bakeOrientation(sourceImage);
+    var decoded = img.bakeOrientation(_decode(source));
     flattenOnWhite(decoded);
     for (var i = 0; i < edit.quarterTurns % 4; i++) {
       decoded = img.copyRotate(decoded, angle: 90);

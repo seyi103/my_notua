@@ -33,27 +33,33 @@ class SystemPhotoPickerService implements PhotoPickerService {
 
   Future<SelectedPhoto> _validate(XFile file) async {
     final bytes = await file.readAsBytes();
-    final decoder = img.findDecoderForData(bytes);
-    if (decoder == null) {
-      throw const FormatException(
-        'Only valid JPEG and PNG photos are supported.',
-      );
-    }
-    final extension = switch (decoder) {
-      img.JpegDecoder() => 'jpg',
-      img.PngDecoder() => 'png',
-      _ => throw const FormatException('Only valid JPEG and PNG photos are supported.'),
-    };
     try {
+      final decoder = img.findDecoderForData(bytes);
+      if (decoder == null) {
+        throw const FormatException(
+          'Only valid JPEG and PNG photos are supported.',
+        );
+      }
+      final extension = switch (decoder) {
+        img.JpegDecoder() => 'jpg',
+        img.PngDecoder() => 'png',
+        _ => throw const FormatException(
+          'Only valid JPEG and PNG photos are supported.',
+        ),
+      };
       if (decoder.decode(bytes) == null) {
         throw const FormatException('The selected JPEG or PNG is corrupt.');
       }
+      return SelectedPhoto(
+        name: file.name,
+        bytes: bytes,
+        extension: extension,
+      );
     } on FormatException {
       rethrow;
     } on Object {
       throw const FormatException('The selected JPEG or PNG is corrupt.');
     }
-    return SelectedPhoto(name: file.name, bytes: bytes, extension: extension);
   }
 }
 

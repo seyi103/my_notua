@@ -116,6 +116,12 @@ void useTallTestSurface(WidgetTester tester) {
   addTearDown(tester.view.resetDevicePixelRatio);
 }
 
+Future<void> pumpAsyncWork(WidgetTester tester, {int times = 10}) async {
+  for (var i = 0; i < times; i++) {
+    await tester.pump(const Duration(milliseconds: 1));
+  }
+}
+
 void main() {
   testWidgets('home presents polished slideshow labels', (tester) async {
     useTallTestSurface(tester);
@@ -224,14 +230,14 @@ void main() {
       imagePipeline: ImmediateImagePipeline(),
     )));
     await tester.tap(find.text('사진 추가'));
-    await tester.pumpAndSettle();
+    await pumpAsyncWork(tester);
     expect(find.byKey(PhotoEditorScreen.previewKey), findsOneWidget);
     await tester.tap(find.text('원본 비교'));
     await tester.pump();
     expect(find.text('편집 보기'), findsOneWidget);
     await tester.tap(find.text('편집 보기'));
     await tester.tap(find.text('슬라이드에 추가'));
-    await tester.pumpAndSettle();
+    await pumpAsyncWork(tester, times: 20);
     expect(draft.slides, hasLength(1));
     expect(find.byType(Image), findsWidgets);
     expect(File(draft.slides.single.previewPath!).existsSync(), isTrue);
@@ -255,11 +261,11 @@ void main() {
     await tester.drag(find.byKey(PhotoEditorScreen.brightnessSliderKey), const Offset(100, 0));
     expect(pipeline.calls.last, same(captured));
     pipeline.completers.single.complete(controlledResult(0xff334455));
-    await tester.pump();
+    await pumpAsyncWork(tester, times: 3);
     expect(pipeline.completers, hasLength(2));
     expect(pipeline.calls.last, same(captured));
     pipeline.completers.last.complete(controlledResult(0xff445566, full: true));
-    await tester.pumpAndSettle();
+    await pumpAsyncWork(tester, times: 3);
   });
 
   testWidgets('order-only sync shows accurate stages', (tester) async {
