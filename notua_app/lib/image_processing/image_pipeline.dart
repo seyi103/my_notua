@@ -34,6 +34,7 @@ class ImagePipeline {
     var decoded = img.decodeImage(source);
     if (decoded == null) throw const ImageProcessingException('Invalid JPEG or PNG image.');
     decoded = img.bakeOrientation(decoded);
+    flattenOnWhite(decoded);
     final imageWidth = quarterTurns.isOdd ? decoded.height : decoded.width;
     final imageHeight = quarterTurns.isOdd ? decoded.width : decoded.height;
     final widthUnit = imageWidth ~/ 4;
@@ -62,6 +63,7 @@ class ImagePipeline {
     var decoded = img.decodeImage(source);
     if (decoded == null) throw const ImageProcessingException('Invalid JPEG or PNG image.');
     decoded = img.bakeOrientation(decoded);
+    flattenOnWhite(decoded);
     for (var i = 0; i < edit.quarterTurns % 4; i++) {
       decoded = img.copyRotate(decoded, angle: 90);
     }
@@ -83,6 +85,7 @@ class ImagePipeline {
     var decoded = img.decodeImage(source);
     if (decoded == null) throw const ImageProcessingException('Invalid JPEG or PNG image.');
     decoded = img.bakeOrientation(decoded);
+    flattenOnWhite(decoded);
     for (var i = 0; i < edit.quarterTurns % 4; i++) {
       decoded = img.copyRotate(decoded, angle: 90);
     }
@@ -119,9 +122,9 @@ class ImagePipeline {
         b = _clamp8(b).toDouble();
         final threshold = ((bayer8[py & 7][px & 7] + .5) / 64 - .5) * 110;
         final index = nearestPalette(
-          _clamp8(r + threshold),
-          _clamp8(g + threshold),
-          _clamp8(b + threshold),
+          _clampRange(r + threshold),
+          _clampRange(g + threshold),
+          _clampRange(b + threshold),
         );
         bytes[py * outWidth + px] = y8Palette[index];
         final color = rgbPalette[index];
@@ -150,7 +153,27 @@ class ImagePipeline {
     return floor.isEven ? floor : floor + 1;
   }
 
-  static int nearestPalette(int r, int g, int b) {
+  static double _clampRange(double value) => value.clamp(0.0, 255.0);
+
+  static void flattenOnWhite(img.Image image) {
+    if (!image.hasAlpha) return;
+    for (final pixel in image) {
+      final alpha = pixel.a.toDouble() / pixel.maxChannelValue;
+      num composite(num channel) =>
+          _clamp8((channel * alpha + pixel.maxChannelValue * (1 - alpha)) *
+              255 /
+              pixel.maxChannelValue) *
+          pixel.maxChannelValue /
+          255;
+      pixel
+        ..r = composite(pixel.r)
+        ..g = composite(pixel.g)
+        ..b = composite(pixel.b)
+        ..a = pixel.maxChannelValue;
+    }
+  }
+
+  static int nearestPalette(double r, double g, double b) {
     var best = 0;
     var bestDistance = double.infinity;
     for (var i = 0; i < rgbPalette.length; i++) {

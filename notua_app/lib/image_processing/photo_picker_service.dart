@@ -1,9 +1,11 @@
 import 'dart:typed_data';
 
 import 'package:image_picker/image_picker.dart';
+import 'package:image/image.dart' as img;
 
 abstract interface class PhotoPickerService {
   Future<SelectedPhoto?> pickPhoto();
+  Future<SelectedPhoto?> retrieveLostPhoto();
 }
 
 class SystemPhotoPickerService implements PhotoPickerService {
@@ -12,19 +14,43 @@ class SystemPhotoPickerService implements PhotoPickerService {
   @override
   Future<SelectedPhoto?> pickPhoto() async {
     final file = await _picker.pickImage(source: ImageSource.gallery, requestFullMetadata: false);
-    if (file == null) return null;
-    final lowerName = file.name.toLowerCase();
-    if (!lowerName.endsWith('.jpg') &&
-        !lowerName.endsWith('.jpeg') &&
-        !lowerName.endsWith('.png')) {
-      throw const FormatException('Only JPEG and PNG photos are supported.');
+    return file == null ? null : _validate(file);
+  }
+
+  @override
+  Future<SelectedPhoto?> retrieveLostPhoto() async {
+    final response = await _picker.retrieveLostData();
+    if (response.isEmpty) return null;
+    if (response.exception != null) throw response.exception!;
+    final files = response.files;
+    final file = files != null && files.isNotEmpty ? files.first : response.file;
+    return file == null ? null : _validate(file);
+  }
+
+  Future<SelectedPhoto> _validate(XFile file) async {
+    final bytes = await file.readAsBytes();
+    final decoder = img.findDecoderForData(bytes);
+    final extension = switch (decoder) {
+      img.JpegDecoder() => 'jpg',
+      img.PngDecoder() => 'png',
+      _ => throw const FormatException('Only valid JPEG and PNG photos are supported.'),
+    };
+    try {
+      if (decoder.decode(bytes) == null) {
+        throw const FormatException('The selected JPEG or PNG is corrupt.');
+      }
+    } on FormatException {
+      rethrow;
+    } on Object {
+      throw const FormatException('The selected JPEG or PNG is corrupt.');
     }
-    return SelectedPhoto(name: file.name, bytes: await file.readAsBytes());
+    return SelectedPhoto(name: file.name, bytes: bytes, extension: extension);
   }
 }
 
 class SelectedPhoto {
-  const SelectedPhoto({required this.name, required this.bytes});
+  const SelectedPhoto({required this.name, required this.bytes, required this.extension});
   final String name;
   final Uint8List bytes;
+  final String extension;
 }

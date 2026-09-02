@@ -27,6 +27,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     widget.draft.addListener(_refresh);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _recoverLostPhoto());
   }
 
   @override
@@ -45,28 +46,46 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _refresh() => setState(() {});
 
-  Future<void> _edit({SlideItem? slide}) async {
+  Future<void> _recoverLostPhoto() async {
+    if (widget.draft.slides.length >= PlaylistDraft.maxSlides) return;
+    try {
+      final photo = await (widget.photoPicker ?? SystemPhotoPickerService())
+          .retrieveLostPhoto();
+      if (photo != null && mounted) await _edit(recoveredPhoto: photo);
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('복구된 사진을 열 수 없어요.')),
+        );
+      }
+    }
+  }
+
+  Future<void> _edit({SlideItem? slide, SelectedPhoto? recoveredPhoto}) async {
     if (slide == null &&
         widget.draft.slides.length >= PlaylistDraft.maxSlides) {
       return;
     }
-    SelectedPhoto? photo;
+    SelectedPhoto? photo = recoveredPhoto;
     final cache = widget.photoCache ?? TemporaryPhotoCache();
     String? sourcePath;
     String? reservedId;
     if (slide == null) {
-      try {
-        photo = await (widget.photoPicker ?? SystemPhotoPickerService()).pickPhoto();
-      } on Object {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('JPEG 또는 PNG 사진을 선택해 주세요.')));
-        return;
+      if (photo == null) {
+        try {
+          photo = await (widget.photoPicker ?? SystemPhotoPickerService())
+              .pickPhoto();
+        } on Object {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('JPEG 또는 PNG 사진을 선택해 주세요.')));
+          return;
+        }
       }
       if (photo == null || !mounted) return;
       reservedId = widget.draft.reservePhotoId();
       if (reservedId == null) return;
       sourcePath = await cache.storeSource(
         reservedId,
-        photo.name.split('.').last.toLowerCase(),
+        photo.extension,
         photo.bytes,
       );
     }

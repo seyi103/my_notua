@@ -23,6 +23,7 @@ class _VisualCropScreenState extends State<VisualCropScreen> {
   void initState() {
     super.initState();
     var decoded = img.bakeOrientation(img.decodeImage(widget.source)!);
+    ImagePipeline.flattenOnWhite(decoded);
     for (var i = 0; i < widget.edit.quarterTurns % 4; i++) {
       decoded = img.copyRotate(decoded, angle: 90);
     }

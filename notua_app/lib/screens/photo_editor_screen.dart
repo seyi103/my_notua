@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -14,7 +13,7 @@ Uint8List _editorSource(PhotoEditorScreen widget) {
   if (widget.photo != null) return widget.photo!.bytes;
   final path = widget.sourcePath ?? widget.slide?.sourcePath;
   if (path != null) return File(path).readAsBytesSync();
-  return base64Decode('iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7l2cLAAAADElEQVR4nGP4z4AATAAAMQUB/2VwxAAAAABJRU5ErkJggg==');
+  throw StateError('PhotoEditorScreen requires a selected or cached source image.');
 }
 
 class PhotoEditorResult {
@@ -44,6 +43,8 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   Uint8List? preview;
   Uint8List? originalPreview;
   Timer? _debounce;
+  Future<void>? _previewWork;
+  _PendingPreview? _pendingPreview;
   int _generation = 0;
   bool saving = false;
   bool compare = false;
@@ -77,22 +78,54 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
   void _schedulePreview({bool immediate = false}) {
     _debounce?.cancel();
     final token = ++_generation;
-    _debounce = Timer(immediate ? Duration.zero : const Duration(milliseconds: 180), () async {
+    final captured = value;
+    _debounce = Timer(
+      immediate ? Duration.zero : const Duration(milliseconds: 180),
+      () {
+        _pendingPreview = _PendingPreview(token, captured);
+        _startPreviewWorker();
+      },
+    );
+  }
+
+  void _startPreviewWorker() {
+    if (_previewWork != null || saving) return;
+    late final Future<void> work;
+    work = _drainPreviewQueue();
+    _previewWork = work;
+    work.whenComplete(() {
+      if (!identical(_previewWork, work)) return;
+      _previewWork = null;
+      if (_pendingPreview != null && mounted && !saving) {
+        _startPreviewWorker();
+      }
+    });
+  }
+
+  Future<void> _drainPreviewQueue() async {
+    while (true) {
+      final request = _pendingPreview;
+      if (request == null) return;
+      _pendingPreview = null;
       try {
-        final result = await pipeline.process(source, value, fullSize: false);
-        final original = await pipeline.originalPreview(source, value);
-        if (!mounted || token != _generation) return;
+        final result = await pipeline.process(
+          source,
+          request.edit,
+          fullSize: false,
+        );
+        final original = await pipeline.originalPreview(source, request.edit);
+        if (!mounted || request.token != _generation) continue;
         setState(() {
           preview = result.previewPng;
           originalPreview = original;
           processingError = null;
         });
       } on Object {
-        if (mounted && token == _generation) {
+        if (mounted && request.token == _generation) {
           setState(() => processingError = '이미지를 처리할 수 없어요. 다른 JPEG 또는 PNG를 선택해 주세요.');
         }
       }
-    });
+    }
   }
 
   Future<void> _crop() async {
@@ -106,8 +139,10 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
     _debounce?.cancel();
     final captured = value;
     ++_generation;
+    _pendingPreview = null;
     setState(() => saving = true);
     try {
+      await _previewWork;
       final result = await pipeline.process(source, captured);
       if (mounted) Navigator.pop(context, PhotoEditorResult(edit: captured, processed: result));
     } on Object catch (error) {
@@ -167,6 +202,12 @@ class _PhotoEditorScreenState extends State<PhotoEditorScreen> {
       ],
     )))),
   );
+}
+
+class _PendingPreview {
+  const _PendingPreview(this.token, this.edit);
+  final int token;
+  final PhotoEditParameters edit;
 }
 
 class _Tool extends StatelessWidget {

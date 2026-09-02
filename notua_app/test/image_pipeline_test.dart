@@ -15,6 +15,26 @@ Uint8List fixture(int width, int height) {
   return Uint8List.fromList(img.encodePng(image));
 }
 
+Uint8List alphaFixture(int alpha) {
+  final image = img.Image(width: 4, height: 3, numChannels: 4);
+  for (var y = 0; y < image.height; y++) {
+    for (var x = 0; x < image.width; x++) {
+      image.setPixelRgba(x, y, 0, 0, 0, alpha);
+    }
+  }
+  return Uint8List.fromList(img.encodePng(image));
+}
+
+Uint8List grayFixture(int value) {
+  final image = img.Image(width: 4, height: 3);
+  for (var y = 0; y < image.height; y++) {
+    for (var x = 0; x < image.width; x++) {
+      image.setPixelRgb(x, y, value, value, value);
+    }
+  }
+  return Uint8List.fromList(img.encodePng(image));
+}
+
 int fnv1a(Uint8List bytes) {
   var hash = 0x811c9dc5;
   for (final byte in bytes) {
@@ -29,6 +49,28 @@ void main() {
     expect(ImagePipeline.bayer8[7], [63, 31, 55, 23, 61, 29, 53, 21]);
     expect(ImagePipeline.y8Palette, [0x00, 0xf8, 0x20, 0x40, 0x10, 0x30]);
     expect(ImagePipeline.nearestPalette(255, 0, 0), 3);
+  });
+
+  test('fractional Bayer boundary matches dither_reference.html', () {
+    expect(ImagePipeline.nearestPalette(
+      166.8828220917325,
+      87.81140305633194,
+      247.2703154572156,
+    ), 4);
+    expect(ImagePipeline.nearestPalette(167, 88, 247), 1,
+      reason: 'Rounding before lookup reproduces the reviewed regression.');
+  });
+
+  test('transparent PNG pixels are flattened onto white', () {
+    const edit = PhotoEditParameters(brightness: 0, contrast: 1, saturation: 1);
+    final transparent = ImagePipeline.processSync(alphaFixture(0), edit,
+      fullSize: false);
+    expect(transparent.y8.toSet(), {0xf8});
+    final partial = ImagePipeline.processSync(alphaFixture(127), edit,
+      fullSize: false);
+    final compositedGray = ImagePipeline.processSync(grayFixture(128), edit,
+      fullSize: false);
+    expect(partial.y8, compositedGray.y8);
   });
 
   test('generates exact landscape dimensions, bytes, and palette-only Y8', () {

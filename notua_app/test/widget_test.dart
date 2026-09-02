@@ -64,10 +64,13 @@ class ControlledImagePipeline extends ImagePipeline {
 }
 
 class FakePhotoPicker implements PhotoPickerService {
-  FakePhotoPicker(this.photo);
+  FakePhotoPicker(this.photo, {this.lostPhoto});
   final SelectedPhoto photo;
+  final SelectedPhoto? lostPhoto;
   @override
   Future<SelectedPhoto?> pickPhoto() async => photo;
+  @override
+  Future<SelectedPhoto?> retrieveLostPhoto() async => lostPhoto;
 }
 
 class ImmediateImagePipeline extends ImagePipeline {
@@ -139,7 +142,10 @@ void main() {
 
   testWidgets('editor has supported adjustment controls', (tester) async {
     useTallTestSurface(tester);
-    await tester.pumpWidget(const MaterialApp(home: PhotoEditorScreen()));
+    await tester.pumpWidget(MaterialApp(home: PhotoEditorScreen(
+      photo: SelectedPhoto(name: 'fixture.png', bytes: previewBytes(0xff224466), extension: 'png'),
+      pipeline: ImmediateImagePipeline(),
+    )));
     expect(find.text('사진 편집'), findsOneWidget);
     expect(find.text('밝기'), findsOneWidget);
     expect(find.text('대비'), findsOneWidget);
@@ -149,7 +155,10 @@ void main() {
 
   testWidgets('each editor slider updates its real processing state', (tester) async {
     useTallTestSurface(tester);
-    await tester.pumpWidget(const MaterialApp(home: PhotoEditorScreen()));
+    await tester.pumpWidget(MaterialApp(home: PhotoEditorScreen(
+      photo: SelectedPhoto(name: 'fixture.png', bytes: previewBytes(0xff224466), extension: 'png'),
+      pipeline: ImmediateImagePipeline(),
+    )));
     for (final key in [
       PhotoEditorScreen.brightnessSliderKey,
       PhotoEditorScreen.contrastSliderKey,
@@ -167,17 +176,22 @@ void main() {
     useTallTestSurface(tester);
     final pipeline = ControlledImagePipeline();
     await tester.pumpWidget(MaterialApp(home: PhotoEditorScreen(
-      photo: SelectedPhoto(name: 'fixture.png', bytes: previewBytes(0xff224466)),
+      photo: SelectedPhoto(name: 'fixture.png', bytes: previewBytes(0xff224466), extension: 'png'),
       pipeline: pipeline,
     )));
     await tester.pump();
     await tester.drag(find.byKey(PhotoEditorScreen.brightnessSliderKey), const Offset(80, 0));
     await tester.pump(const Duration(milliseconds: 200));
-    expect(pipeline.completers, hasLength(2));
+    await tester.drag(find.byKey(PhotoEditorScreen.contrastSliderKey), const Offset(60, 0));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(pipeline.completers, hasLength(1),
+      reason: 'Only one isolate-backed process may be active.');
+    pipeline.completers[0].complete(controlledResult(0xffff0000));
+    await tester.pump();
+    expect(pipeline.completers, hasLength(2),
+      reason: 'Rapid updates are coalesced into one newest pending job.');
     final newest = controlledResult(0xff00ff00);
     pipeline.completers[1].complete(newest);
-    await tester.pump();
-    pipeline.completers[0].complete(controlledResult(0xffff0000));
     await tester.pump();
     final shown = tester.widget<Image>(find.byKey(PhotoEditorScreen.previewKey));
     expect((shown.image as MemoryImage).bytes, newest.previewPng);
@@ -186,7 +200,7 @@ void main() {
   testWidgets('slider adjustment produces different processed preview bytes', (tester) async {
     useTallTestSurface(tester);
     await tester.pumpWidget(MaterialApp(home: PhotoEditorScreen(
-      photo: SelectedPhoto(name: 'fixture.png', bytes: previewBytes(0xff224466)),
+      photo: SelectedPhoto(name: 'fixture.png', bytes: previewBytes(0xff224466), extension: 'png'),
       pipeline: AdjustmentImagePipeline(),
     )));
     await tester.pumpAndSettle();
@@ -205,7 +219,7 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: HomeScreen(
       draft: draft,
       syncService: EmptySynchronizationService(),
-      photoPicker: FakePhotoPicker(SelectedPhoto(name: 'fixture.png', bytes: previewBytes(0xff224466))),
+      photoPicker: FakePhotoPicker(SelectedPhoto(name: 'fixture.png', bytes: previewBytes(0xff224466), extension: 'png')),
       photoCache: TemporaryPhotoCache(root: cacheDirectory),
       imagePipeline: ImmediateImagePipeline(),
     )));
@@ -227,18 +241,22 @@ void main() {
     useTallTestSurface(tester);
     final pipeline = ControlledImagePipeline();
     await tester.pumpWidget(MaterialApp(home: PhotoEditorScreen(
-      photo: SelectedPhoto(name: 'fixture.png', bytes: previewBytes(0xff224466)),
+      photo: SelectedPhoto(name: 'fixture.png', bytes: previewBytes(0xff224466), extension: 'png'),
       pipeline: pipeline,
     )));
-    await tester.pump();
-    pipeline.completers.single.complete(controlledResult(0xff334455));
     await tester.pump();
     await tester.tap(find.text('슬라이드에 추가'));
     await tester.pump();
     final captured = pipeline.calls.last;
+    expect(pipeline.completers, hasLength(1),
+      reason: 'Save waits for the active preview rather than starting concurrently.');
     expect(tester.widget<Slider>(find.byKey(PhotoEditorScreen.brightnessSliderKey)).onChanged, isNull);
     expect(tester.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '왼쪽 회전')).onPressed, isNull);
     await tester.drag(find.byKey(PhotoEditorScreen.brightnessSliderKey), const Offset(100, 0));
+    expect(pipeline.calls.last, same(captured));
+    pipeline.completers.single.complete(controlledResult(0xff334455));
+    await tester.pump();
+    expect(pipeline.completers, hasLength(2));
     expect(pipeline.calls.last, same(captured));
     pipeline.completers.last.complete(controlledResult(0xff445566, full: true));
     await tester.pumpAndSettle();
