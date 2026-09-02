@@ -1,0 +1,1097 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>4bpp & Y8 Dither Preview → C Array / BIN Export</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  body{font-family:Arial,Helvetica,sans-serif;background:#0b1224;color:#e6f1ff;padding:24px}
+  .card{background:rgba(12,20,40,0.85);padding:18px;border-radius:12px;border:1px solid rgba(90,215,255,0.08);max-width:1100px;margin:0 auto}
+  h1{margin:0 0 8px;font-size:20px}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  .col{flex:1;min-width:260px}
+  label{font-weight:600;font-size:13px}
+  select,input[type=file],button,input[type=text]{width:100%;padding:8px;margin-top:6px;border-radius:8px;border:1px solid rgba(90,215,255,0.08);background:#0f1726;color:#e6f1ff}
+  input[type=range]{width:100%;margin-top:6px}
+  canvas{border:1px solid rgba(90,215,255,0.08);background:#0b1224;display:block;margin-top:12px;max-width:100%}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .controls button{flex:1;min-width:140px}
+  .small{font-size:12px;color:#93a4c4}
+  .slider-row{display:flex;align-items:center;gap:8px;margin-top:6px}
+  .slider-row span{font-size:12px;color:#93a4c4;min-width:42px;text-align:right}
+  .preset{background:#16324a;border-color:rgba(90,215,255,0.25)}
+  .group-title{font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:#5fb8e0;margin-top:14px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>4bpp / Y8 Dither → C Array / BIN Export (Vivid)</h1>
+  <p class="small">Saturation / contrast / brightness are applied before dithering so colors stay vivid (avoids the "washed-out" look).</p>
+
+  <div class="row">
+    <div class="col">
+      <label>Target resolution</label>
+      <select id="resolution">
+        <option value="1600,1200">1600 × 1200 (OK-TC05B)</option>
+        <option value="1200,1600">1200 × 1600</option>
+        <option value="800,600">800 × 600</option>
+        <option value="400,300">400 × 300</option>
+      </select>
+
+      <label style="margin-top:10px">Dithering algorithm</label>
+      <select id="ditherType">
+        <optgroup label="Error diffusion (scattered / noisy texture)">
+          <option value="floydSerpentine">Floyd–Steinberg (Serpentine)</option>
+          <option value="floyd">Floyd–Steinberg (left-to-right)</option>
+          <option value="atkinson">Atkinson</option>
+          <option value="stucki">Stucki</option>
+          <option value="jjn">Jarvis-Judice-Ninke</option>
+        </optgroup>
+        <optgroup label="Ordered (smoother, uniform texture)">
+          <option value="bayer8">Bayer 8×8 (fine, smooth)</option>
+          <option value="bayer4">Bayer 4×4 (coarser)</option>
+        </optgroup>
+      </select>
+
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-weight:400">
+        <input id="flipH" type="checkbox" style="width:auto;margin:0">
+        Flip horizontally (mirror left ↔ right)
+      </label>
+
+      <!-- Image enhancement (makes colors more vivid) -->
+      <div style="margin-top:14px;padding:10px;border:1px solid rgba(90,215,255,0.12);border-radius:8px">
+        <label>Image enhancement (before dithering)</label>
+        <div class="slider-row">
+          <span>Saturation</span>
+          <input id="saturation" type="range" min="0" max="3" step="0.05" value="1.5">
+          <span id="satVal">1.50</span>
+        </div>
+        <div class="slider-row">
+          <span>Contrast</span>
+          <input id="contrast" type="range" min="0.5" max="2" step="0.05" value="1.15">
+          <span id="conVal">1.15</span>
+        </div>
+        <div class="slider-row">
+          <span>Brightness</span>
+          <input id="brightness" type="range" min="-60" max="60" step="2" value="0">
+          <span id="brtVal">0</span>
+        </div>
+        <div class="slider-row">
+          <span>Gamma</span>
+          <input id="gamma" type="range" min="0.4" max="2.5" step="0.05" value="1.0">
+          <span id="gamVal">1.00</span>
+        </div>
+        <button id="presetVivid" class="preset" style="margin-top:8px">Vivid preset</button>
+        <button id="presetOff"   class="preset" style="margin-top:8px">Enhancement off (original)</button>
+        <button id="autoTuneBtn" class="preset" style="margin-top:8px;background:#1d4a2e;border-color:rgba(120,255,170,0.3)">✨ Auto-tune with AI</button>
+        <p id="autoTuneStatus" class="small" style="margin:6px 0 0"></p>
+      </div>
+
+      <!-- Smoothness controls -->
+      <div style="margin-top:14px;padding:10px;border:1px solid rgba(90,215,255,0.12);border-radius:8px">
+        <label>Smoothness</label>
+        <div class="slider-row">
+          <span>Pre-blur</span>
+          <input id="blurRadius" type="range" min="0" max="4" step="0.5" value="0">
+          <span id="blurVal">0</span>
+        </div>
+        <div class="slider-row">
+          <span>Ordered strength</span>
+          <input id="orderStrength" type="range" min="32" max="200" step="4" value="110">
+          <span id="ordVal">110</span>
+        </div>
+        <p class="small" style="margin:6px 0 0">
+          Pre-blur softens detail so the dither texture is calmer.<br>
+          "Ordered strength" only affects the Bayer modes (lower = flatter, higher = more dither).
+        </p>
+      </div>
+
+      <!-- Art style filter -->
+      <div style="margin-top:14px;padding:10px;border:1px solid rgba(90,215,255,0.12);border-radius:8px">
+        <label>Art Style Filter</label>
+        <select id="artStyle">
+          <option value="none">Original</option>
+          <option value="popart">Pop Art</option>
+          <option value="minhwa">Korean Minhwa (민화풍)</option>
+          <option value="watercolor">Watercolor</option>
+          <option value="pixel">Pixel Art</option>
+          <option value="ink">Ink Wash</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-weight:400">
+          <input id="pixelSpectra6" type="checkbox" style="width:auto;margin:0">
+          Pixel Art: snap colors to Spectra6 6-color palette
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:6px;font-weight:400">
+          <input id="pixelOutline" type="checkbox" checked style="width:auto;margin:0">
+          Pixel Art: black outlines
+        </label>
+        <p class="small" style="margin:6px 0 0">
+          Applied first in the pipeline: Art Style → Enhance → Blur → 6-color Dither.<br>
+          For Spectra6 panels, try <b>Minhwa + Bayer8</b>, <b>Pop Art + Bayer8</b>, or <b>Watercolor + Floyd Serpentine</b>.
+        </p>
+      </div>
+
+      <!-- Gemini AI restyle (image-to-image) -->
+      <div style="margin-top:14px;padding:10px;border:1px solid rgba(120,255,170,0.25);border-radius:8px;background:rgba(20,50,35,0.35)">
+        <label>✨ AI Restyle (Gemini "Nano Banana")</label>
+        <p class="small" style="margin:4px 0 8px">
+          Redraws your photo in the chosen style, then dithers it. Needs a paid Google AI Studio key
+          (image models have no free tier). Receives a 1K image and upscales to your target resolution.
+          <b>Open this file locally / on your own host</b> — not inside the claude.ai preview (CORS).
+        </p>
+
+        <label style="margin-top:6px">Style</label>
+        <select id="aiStyle">
+          <option value="pixel">Pixel Art (chunky, outlined)</option>
+          <option value="anime">Anime / storybook illustration</option>
+          <option value="inkwash">Ink Wash (수묵화, sumi-e)</option>
+          <option value="minhwa">Korean Minhwa (민화)</option>
+          <option value="watercolor">Watercolor painting</option>
+          <option value="popart">Pop Art (bold, Warhol-like)</option>
+          <option value="cartoon">Cartoon / cel-shaded</option>
+          <option value="oil">Oil painting</option>
+          <option value="lowpoly">Low-poly geometric</option>
+          <option value="custom">Custom prompt…</option>
+        </select>
+
+        <input id="aiCustomPrompt" type="text" placeholder="Custom style prompt" style="display:none;margin-top:6px">
+
+        <label style="margin-top:8px">Model</label>
+        <select id="aiModel">
+          <option value="gemini-2.5-flash-image">gemini-2.5-flash-image (cheapest, ~$0.039/img)</option>
+          <option value="gemini-3.1-flash-image">gemini-3.1-flash-image — Nano Banana 2 (newer)</option>
+          <option value="gemini-3-pro-image-preview">gemini-3-pro-image-preview (best, pricier)</option>
+        </select>
+        <p class="small" style="margin:4px 0 0">
+          A 1K image is requested to keep cost low (~4–7¢); the tool upscales it to your target resolution before dithering.
+        </p>
+
+        <label style="margin-top:8px">Google AI Studio API key (paid project)</label>
+        <input id="aiApiKey" type="password" placeholder="AIza..." autocomplete="off">
+        <label style="display:flex;align-items:center;gap:8px;margin-top:6px;font-weight:400">
+          <input id="aiRememberKey" type="checkbox" style="width:auto;margin:0">
+          Remember key in this browser
+        </label>
+
+        <button id="aiRestyleBtn" class="preset" style="margin-top:10px;background:#1d4a2e;border-color:rgba(120,255,170,0.3)">✨ Restyle with Gemini</button>
+        <button id="aiRevertBtn"  class="preset" style="margin-top:6px;display:none">↺ Revert to original photo</button>
+        <p id="aiStatus" class="small" style="margin:8px 0 0"></p>
+      </div>
+
+      <label style="margin-top:10px">Array name prefix (English, no spaces)</label>
+      <input id="arrayNamePrefix" type="text" value="my_image" placeholder="e.g. badge / panel / icon">
+
+      <label style="margin-top:10px">Choose image</label>
+      <input id="upload" type="file" accept="image/*">
+
+      <button id="processBtn" style="margin-top:12px">Generate preview &amp; data</button>
+
+      <div class="group-title">C header (.h)</div>
+      <div class="controls">
+        <button id="download4bpp" disabled>Download 4BPP .h</button>
+        <button id="downloadY8"   disabled>Download Y8 .h</button>
+      </div>
+
+      <div class="group-title">Raw binary (.bin)</div>
+      <div class="controls">
+        <button id="download4bppBin" disabled>Download 4BPP .bin</button>
+        <button id="downloadY8Bin"   disabled>Download Y8 .bin</button>
+      </div>
+
+      <p class="small" style="margin-top:12px">
+        4BPP: two pixels per byte (high nibble = left), index 0–5.<br>
+        Y8: one byte per pixel after mapping (0x00,0xF8,0x20,0x40,0x10,0x30), byte count = width × height.
+      </p>
+    </div>
+
+    <div class="col">
+      <label>Original</label>
+      <canvas id="origCanvas" width="320" height="240"></canvas>
+
+      <label style="margin-top:8px">Processed preview (target size)</label>
+      <canvas id="outCanvas" width="320" height="240"></canvas>
+    </div>
+  </div>
+</div>
+
+<script>
+// Palette and mapping (6 colors)
+const PALETTE_AIO_E6_SIZE = 6;
+const PALETTE = [
+  [0x00,0x00,0x00], // 0 black
+  [0xFF,0xFF,0xFF], // 1 white
+  [0xFF,0xFF,0x00], // 2 yellow
+  [0xFF,0x00,0x00], // 3 red
+  [0x00,0x00,0xFF], // 4 blue
+  [0x00,0xFF,0x00]  // 5 green
+];
+const PALETTE_AIO_E6_MAPPING_T2000 = [0x00, 0xF8, 0x20, 0x40, 0x10, 0x30];
+
+// Nearest palette index
+function findNearestPaletteIndex(rgb) {
+  let best = 0, bestD = Infinity;
+  for (let i = 0; i < PALETTE_AIO_E6_SIZE; i++) {
+    const p = PALETTE[i];
+    const d = (rgb[0]-p[0])**2 + (rgb[1]-p[1])**2 + (rgb[2]-p[2])**2;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+function closestColor(c) {
+  return PALETTE[findNearestPaletteIndex(c)];
+}
+
+// ─── Image enhancement (saturation / contrast / brightness) ──────
+// Called before dithering. Higher saturation makes pixels snap to pure
+// colors more often, which avoids the washed-out look.
+function clamp8(v){ return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+function enhanceImage(imgData, satMul, contrast, brightness, gamma) {
+  const data = imgData.data;
+  const gInv = 1 / (gamma || 1);
+  for (let i = 0; i < data.length; i += 4) {
+    let r = data[i], g = data[i+1], b = data[i+2];
+
+    // 1) brightness
+    r += brightness; g += brightness; b += brightness;
+
+    // 2) contrast (around 128)
+    r = (r - 128) * contrast + 128;
+    g = (g - 128) * contrast + 128;
+    b = (b - 128) * contrast + 128;
+
+    // 3) gamma (on 0..1 normalized values; gamma>1 brightens midtones)
+    if (gamma && gamma !== 1) {
+      r = 255 * Math.pow(clamp8(r) / 255, gInv);
+      g = 255 * Math.pow(clamp8(g) / 255, gInv);
+      b = 255 * Math.pow(clamp8(b) / 255, gInv);
+    }
+
+    // 4) saturation (interpolate/extrapolate against luminance)
+    const lum = 0.299*r + 0.587*g + 0.114*b;
+    r = lum + (r - lum) * satMul;
+    g = lum + (g - lum) * satMul;
+    b = lum + (b - lum) * satMul;
+
+    data[i]   = clamp8(r);
+    data[i+1] = clamp8(g);
+    data[i+2] = clamp8(b);
+  }
+}
+
+// ─── Pre-blur (separable box blur, approximates Gaussian) ────────
+// Softens detail before dithering so the dot texture reads calmer.
+function boxBlur(imgData, radius) {
+  if (radius <= 0) return;
+  const w = imgData.width, h = imgData.height, src = imgData.data;
+  const r = Math.max(1, Math.round(radius));
+  const div = r * 2 + 1;
+  const tmp = new Float32Array(w * h * 3);
+
+  // horizontal pass
+  for (let y = 0; y < h; y++) {
+    for (let c = 0; c < 3; c++) {
+      let sum = 0;
+      for (let x = -r; x <= r; x++) {
+        const xx = Math.min(w-1, Math.max(0, x));
+        sum += src[(y*w + xx)*4 + c];
+      }
+      for (let x = 0; x < w; x++) {
+        tmp[(y*w + x)*3 + c] = sum / div;
+        const xOut = Math.min(w-1, Math.max(0, x - r));
+        const xIn  = Math.min(w-1, Math.max(0, x + r + 1));
+        sum += src[(y*w + xIn)*4 + c] - src[(y*w + xOut)*4 + c];
+      }
+    }
+  }
+  // vertical pass (write back into src)
+  for (let x = 0; x < w; x++) {
+    for (let c = 0; c < 3; c++) {
+      let sum = 0;
+      for (let y = -r; y <= r; y++) {
+        const yy = Math.min(h-1, Math.max(0, y));
+        sum += tmp[(yy*w + x)*3 + c];
+      }
+      for (let y = 0; y < h; y++) {
+        src[(y*w + x)*4 + c] = sum / div;
+        const yOut = Math.min(h-1, Math.max(0, y - r));
+        const yIn  = Math.min(h-1, Math.max(0, y + r + 1));
+        sum += tmp[(yIn*w + x)*3 + c] - tmp[(yOut*w + x)*3 + c];
+      }
+    }
+  }
+}
+
+// ─── Art style filters ───────────────────────────────────────────
+// Applied FIRST in the pipeline: Art Style -> Enhance -> Blur -> Dither.
+
+// 1. Pixel Art
+// Block grid -> cel shade (contrast + saturation) -> quantize (or snap to
+// Spectra6) -> draw black outlines on blocks that border a strong color
+// change. This gives the chunky, outlined look of real pixel-art illustration
+// rather than a soft mosaic.
+function applyPixelArt(imgData, blockSize = 8) {
+  const w = imgData.width, h = imgData.height, d = imgData.data;
+  const useSpectra6 = !!(document.getElementById('pixelSpectra6') || {}).checked;
+  const drawOutline = ((document.getElementById('pixelOutline') || {}).checked) !== false;
+  const QSTEP = 40;                 // color quantization step (rich mode)
+  const EDGE_TH = 100;              // color-distance threshold for outlines
+
+  const gw = Math.ceil(w / blockSize), gh = Math.ceil(h / blockSize);
+  const cells = new Array(gw * gh);
+
+  // 1) average each block, then cel-shade + quantize
+  for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
+    const x0 = gx * blockSize, y0 = gy * blockSize;
+    let r = 0, g = 0, b = 0, c = 0;
+    for (let yy = y0; yy < Math.min(y0 + blockSize, h); yy++)
+      for (let xx = x0; xx < Math.min(x0 + blockSize, w); xx++) {
+        const i = (yy * w + xx) * 4; r += d[i]; g += d[i+1]; b += d[i+2]; c++;
+      }
+    r /= c; g /= c; b /= c;
+
+    // cel shade: contrast + saturation
+    r = (r - 128) * 1.15 + 128; g = (g - 128) * 1.15 + 128; b = (b - 128) * 1.15 + 128;
+    const lum = 0.299*r + 0.587*g + 0.114*b;
+    r = clamp8(lum + (r - lum) * 1.45);
+    g = clamp8(lum + (g - lum) * 1.45);
+    b = clamp8(lum + (b - lum) * 1.45);
+
+    if (useSpectra6) {
+      const p = PALETTE[findNearestPaletteIndex([r, g, b])];
+      r = p[0]; g = p[1]; b = p[2];
+    } else {
+      r = clamp8(Math.round(r / QSTEP) * QSTEP);
+      g = clamp8(Math.round(g / QSTEP) * QSTEP);
+      b = clamp8(Math.round(b / QSTEP) * QSTEP);
+    }
+    cells[gy * gw + gx] = { r, g, b };
+  }
+
+  // 2) mark outline blocks: where the block color differs strongly from a neighbor
+  const isEdge = new Uint8Array(gw * gh);
+  if (drawOutline) {
+    const nb = [[1,0],[-1,0],[0,1],[0,-1]];
+    for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
+      const a = cells[gy * gw + gx];
+      for (const [dx, dy] of nb) {
+        const nx = gx + dx, ny = gy + dy;
+        if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+        const o = cells[ny * gw + nx];
+        const dist = Math.sqrt((a.r-o.r)**2 + (a.g-o.g)**2 + (a.b-o.b)**2);
+        if (dist > EDGE_TH) { isEdge[gy * gw + gx] = 1; break; }
+      }
+    }
+  }
+
+  // 3) render blocks (outline blocks -> black)
+  for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
+    const cc = cells[gy * gw + gx];
+    let r = cc.r, g = cc.g, b = cc.b;
+    if (isEdge[gy * gw + gx]) { r = 0; g = 0; b = 0; }
+    const x0 = gx * blockSize, y0 = gy * blockSize;
+    for (let yy = y0; yy < Math.min(y0 + blockSize, h); yy++)
+      for (let xx = x0; xx < Math.min(x0 + blockSize, w); xx++) {
+        const i = (yy * w + xx) * 4; d[i] = r; d[i+1] = g; d[i+2] = b;
+      }
+  }
+}
+
+// 2. Pop Art
+function applyPopArt(imgData) {
+  const d = imgData.data;
+
+  for (let i = 0; i < d.length; i += 4) {
+    d[i]   = Math.round(d[i]   / 64) * 64;
+    d[i+1] = Math.round(d[i+1] / 64) * 64;
+    d[i+2] = Math.round(d[i+2] / 64) * 64;
+
+    const lum = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+
+    d[i]   = clamp8(lum + (d[i]   - lum) * 1.8);
+    d[i+1] = clamp8(lum + (d[i+1] - lum) * 1.8);
+    d[i+2] = clamp8(lum + (d[i+2] - lum) * 1.8);
+  }
+}
+
+// 3. Watercolor (reuses boxBlur)
+function applyWatercolor(imgData) {
+  boxBlur(imgData, 2);
+
+  const d = imgData.data;
+
+  for (let i = 0; i < d.length; i += 4) {
+    d[i]   = Math.round(d[i]   / 24) * 24;
+    d[i+1] = Math.round(d[i+1] / 24) * 24;
+    d[i+2] = Math.round(d[i+2] / 24) * 24;
+  }
+}
+
+// 4. Ink Wash
+function applyInkWash(imgData) {
+  const d = imgData.data;
+
+  for (let i = 0; i < d.length; i += 4) {
+    const gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+
+    let v = gray;
+    if (v < 64) v = 0;
+    else if (v < 128) v = 80;
+    else if (v < 192) v = 170;
+    else v = 255;
+
+    d[i] = v; d[i+1] = v; d[i+2] = v;
+  }
+}
+
+// 5. Korean Minhwa (Spectra6-optimized: push toward pure primaries)
+function applyMinhwa(imgData) {
+  const d = imgData.data;
+
+  for (let i = 0; i < d.length; i += 4) {
+    const lum = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+
+    let r = lum + (d[i]   - lum) * 2.2;
+    let g = lum + (d[i+1] - lum) * 2.2;
+    let b = lum + (d[i+2] - lum) * 2.2;
+
+    d[i]   = clamp8(Math.round(r / 32) * 32);
+    d[i+1] = clamp8(Math.round(g / 32) * 32);
+    d[i+2] = clamp8(Math.round(b / 32) * 32);
+  }
+}
+
+function applyArtStyle(imgData, style) {
+  if      (style === 'pixel')      applyPixelArt(imgData);
+  else if (style === 'popart')     applyPopArt(imgData);
+  else if (style === 'watercolor') applyWatercolor(imgData);
+  else if (style === 'ink')        applyInkWash(imgData);
+  else if (style === 'minhwa')     applyMinhwa(imgData);
+}
+
+// ─── Ordered (Bayer) dithering ───────────────────────────────────
+// Produces a regular, fine texture that reads smoother than the
+// scattered noise of error diffusion.
+const BAYER8 = [
+  [ 0,32, 8,40, 2,34,10,42],
+  [48,16,56,24,50,18,58,26],
+  [12,44, 4,36,14,46, 6,38],
+  [60,28,52,20,62,30,54,22],
+  [ 3,35,11,43, 1,33, 9,41],
+  [51,19,59,27,49,17,57,25],
+  [15,47, 7,39,13,45, 5,37],
+  [63,31,55,23,61,29,53,21]
+];
+const BAYER4 = [
+  [ 0, 8, 2,10],
+  [12, 4,14, 6],
+  [ 3,11, 1, 9],
+  [15, 7,13, 5]
+];
+
+function orderedDither(imgData, matrix, spread) {
+  const n = matrix.length;          // 8 or 4
+  const denom = n * n;              // 64 or 16
+  const w = imgData.width, h = imgData.height, data = imgData.data;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y*w + x)*4;
+    // threshold offset in range about -0.5..0.5, scaled by spread
+    const t = ((matrix[y % n][x % n] + 0.5) / denom - 0.5) * spread;
+    const r = clamp8(data[i]   + t);
+    const g = clamp8(data[i+1] + t);
+    const b = clamp8(data[i+2] + t);
+    const realC = closestColor([r, g, b]);
+    data[i] = realC[0]; data[i+1] = realC[1]; data[i+2] = realC[2];
+  }
+}
+
+// ─── Dithering algorithms ───────────────────────────────────────
+function floydDither(imgData) {
+  const w = imgData.width, h = imgData.height, data = imgData.data;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y*w + x)*4;
+    const old = [data[i], data[i+1], data[i+2]];
+    const realC = closestColor(old);
+    data[i] = realC[0]; data[i+1] = realC[1]; data[i+2] = realC[2];
+    const err = [old[0]-realC[0], old[1]-realC[1], old[2]-realC[2]];
+    const diff = (dx,dy,f) => {
+      const nx = x+dx, ny = y+dy;
+      if (nx>=0 && nx<w && ny>=0 && ny<h) {
+        const ni = (ny*w + nx)*4;
+        data[ni] += err[0]*f; data[ni+1] += err[1]*f; data[ni+2] += err[2]*f;
+      }
+    };
+    diff(1,0,7/16); diff(-1,1,3/16); diff(0,1,5/16); diff(1,1,1/16);
+  }
+}
+
+function floydSerpentineDither(imgData) {
+  const w = imgData.width, h = imgData.height, data = imgData.data;
+  for (let y = 0; y < h; y++) {
+    const l2r = (y % 2 === 0);
+    let x = l2r ? 0 : w-1;
+    const step = l2r ? 1 : -1;
+    while (l2r ? x < w : x >= 0) {
+      const i = (y*w + x)*4;
+      const old = [data[i], data[i+1], data[i+2]];
+      const realC = closestColor(old);
+      data[i] = realC[0]; data[i+1] = realC[1]; data[i+2] = realC[2];
+      const err = [old[0]-realC[0], old[1]-realC[1], old[2]-realC[2]];
+      const diff = (dx,dy,f) => {
+        const nx = x + dx*step, ny = y + dy;
+        if (nx>=0 && nx<w && ny>=0 && ny<h) {
+          const ni = (ny*w + nx)*4;
+          data[ni] += err[0]*f; data[ni+1] += err[1]*f; data[ni+2] += err[2]*f;
+        }
+      };
+      diff(1,0,7/16); diff(-1,1,3/16); diff(0,1,5/16); diff(1,1,1/16);
+      x += step;
+    }
+  }
+}
+
+function atkinsonDither(imgData) {
+  const w = imgData.width, h = imgData.height, data = imgData.data;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y*w + x)*4;
+    const old = [data[i], data[i+1], data[i+2]];
+    const realC = closestColor(old);
+    data[i] = realC[0]; data[i+1] = realC[1]; data[i+2] = realC[2];
+    const err = [(old[0]-realC[0])/8, (old[1]-realC[1])/8, (old[2]-realC[2])/8];
+    const diff = (dx,dy) => {
+      const nx = x+dx, ny = y+dy;
+      if (nx>=0 && nx<w && ny>=0 && ny<h) {
+        const ni = (ny*w + nx)*4;
+        data[ni] += err[0]; data[ni+1] += err[1]; data[ni+2] += err[2];
+      }
+    };
+    diff(1,0); diff(2,0); diff(-1,1); diff(0,1); diff(1,1); diff(0,2);
+  }
+}
+
+// Generic error diffusion (for Stucki / JJN). kernel: [dx, dy, weight], divisor = denominator.
+function errorDiffuse(imgData, kernel, divisor) {
+  const w = imgData.width, h = imgData.height, data = imgData.data;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y*w + x)*4;
+    const old = [data[i], data[i+1], data[i+2]];
+    const realC = closestColor(old);
+    data[i] = realC[0]; data[i+1] = realC[1]; data[i+2] = realC[2];
+    const err = [old[0]-realC[0], old[1]-realC[1], old[2]-realC[2]];
+    for (const [dx, dy, wt] of kernel) {
+      const nx = x+dx, ny = y+dy;
+      if (nx>=0 && nx<w && ny>=0 && ny<h) {
+        const ni = (ny*w + nx)*4;
+        const f = wt / divisor;
+        data[ni] += err[0]*f; data[ni+1] += err[1]*f; data[ni+2] += err[2]*f;
+      }
+    }
+  }
+}
+
+function stuckiDither(imgData) {
+  const kernel = [
+    [1,0,8],[2,0,4],
+    [-2,1,2],[-1,1,4],[0,1,8],[1,1,4],[2,1,2],
+    [-2,2,1],[-1,2,2],[0,2,4],[1,2,2],[2,2,1]
+  ];
+  errorDiffuse(imgData, kernel, 42);
+}
+
+function jjnDither(imgData) {
+  const kernel = [
+    [1,0,7],[2,0,5],
+    [-2,1,3],[-1,1,5],[0,1,7],[1,1,5],[2,1,3],
+    [-2,2,1],[-1,2,3],[0,2,5],[1,2,3],[2,2,1]
+  ];
+  errorDiffuse(imgData, kernel, 48);
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────
+function imageDataToIndexArray(imgData) {
+  const w = imgData.width, h = imgData.height, data = imgData.data;
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y*w + x)*4;
+    out[y*w + x] = findNearestPaletteIndex([data[i], data[i+1], data[i+2]]);
+  }
+  return out;
+}
+
+function pack4bpp(indices, w, h) {
+  const bytes = Math.ceil(w * h / 2);
+  const out = new Uint8Array(bytes);
+  let pos = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x += 2) {
+    const a = indices[y*w + x] & 0xF;
+    const b = (x+1 < w) ? (indices[y*w + x+1] & 0xF) : 1;
+    out[pos++] = (a << 4) | b;
+  }
+  return out;
+}
+
+function indexToY8(indices) {
+  const out = new Uint8Array(indices.length);
+  for (let i = 0; i < indices.length; i++) {
+    const idx = indices[i];
+    out[i] = (idx >= 0 && idx < PALETTE_AIO_E6_SIZE) ? PALETTE_AIO_E6_MAPPING_T2000[idx] : 0xF8;
+  }
+  return out;
+}
+
+function uint8ToCHeader(bytes, arrayName, width, height, formatType, ditherType) {
+  const lines = [];
+  lines.push(`// Generated with ${ditherType} dithering`);
+  lines.push(`// Resolution: ${width} × ${height}`);
+  lines.push(`// Format: ${formatType}`);
+  lines.push(`// Palette: 0=black,1=white,2=yellow,3=red,4=blue,5=green`);
+  lines.push(``);
+  lines.push(`#ifndef ${arrayName.toUpperCase()}_H`);
+  lines.push(`#define ${arrayName.toUpperCase()}_H`);
+  lines.push(``);
+  lines.push(`static const unsigned char ${arrayName}[] = {`);
+
+  let line = '    ';
+  for (let i = 0; i < bytes.length; i++) {
+    line += `0x${bytes[i].toString(16).padStart(2,'0')}, `;
+    if ((i + 1) % 16 === 0 || i === bytes.length - 1) {
+      lines.push(line.trimEnd());
+      line = '    ';
+    }
+  }
+  if (lines[lines.length-1].endsWith(', ')) {
+    lines[lines.length-1] = lines[lines.length-1].slice(0, -2);
+  }
+
+  lines.push(`};`);
+  lines.push(``);
+  lines.push(`static const int ${arrayName}_width  = ${width};`);
+  lines.push(`static const int ${arrayName}_height = ${height};`);
+  lines.push(`static const size_t ${arrayName}_size  = ${bytes.length};  // byte count`);
+  lines.push(``);
+  lines.push(`#endif // ${arrayName.toUpperCase()}_H`);
+
+  return lines.join('\n');
+}
+
+// Trigger a file download from a Blob
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── UI logic ────────────────────────────────────────────────────
+const upload = document.getElementById('upload');
+const processBtn = document.getElementById('processBtn');
+const origCanvas = document.getElementById('origCanvas');
+const outCanvas = document.getElementById('outCanvas');
+const download4bpp    = document.getElementById('download4bpp');
+const downloadY8      = document.getElementById('downloadY8');
+const download4bppBin = document.getElementById('download4bppBin');
+const downloadY8Bin   = document.getElementById('downloadY8Bin');
+
+const satEl = document.getElementById('saturation');
+const conEl = document.getElementById('contrast');
+const brtEl = document.getElementById('brightness');
+const satVal = document.getElementById('satVal');
+const conVal = document.getElementById('conVal');
+const brtVal = document.getElementById('brtVal');
+const blurEl = document.getElementById('blurRadius');
+const ordEl  = document.getElementById('orderStrength');
+const blurVal = document.getElementById('blurVal');
+const ordVal  = document.getElementById('ordVal');
+const gamEl = document.getElementById('gamma');
+const gamVal = document.getElementById('gamVal');
+const artStyleEl = document.getElementById('artStyle');
+
+let lastIndices = null;
+let lastW = 0, lastH = 0;
+
+function syncLabels() {
+  satVal.textContent = parseFloat(satEl.value).toFixed(2);
+  conVal.textContent = parseFloat(conEl.value).toFixed(2);
+  brtVal.textContent = brtEl.value;
+  blurVal.textContent = blurEl.value;
+  ordVal.textContent = ordEl.value;
+  gamVal.textContent = parseFloat(gamEl.value).toFixed(2);
+}
+[satEl, conEl, brtEl, blurEl, ordEl, gamEl].forEach(el => el.addEventListener('input', () => {
+  syncLabels();
+  if (upload.files[0]) runProcess(); // live re-render while dragging
+}));
+syncLabels();
+artStyleEl.addEventListener('change', () => { if (currentImg) runProcess(); });
+document.getElementById('flipH').addEventListener('change', () => { if (currentImg) runProcess(); });
+document.getElementById('pixelSpectra6').addEventListener('change', () => { if (currentImg) runProcess(); });
+document.getElementById('pixelOutline').addEventListener('change', () => { if (currentImg) runProcess(); });
+
+document.getElementById('presetVivid').addEventListener('click', () => {
+  satEl.value = 1.6; conEl.value = 1.2; brtEl.value = 5; gamEl.value = 1.0; syncLabels();
+  if (upload.files[0]) runProcess();
+});
+document.getElementById('presetOff').addEventListener('click', () => {
+  satEl.value = 1; conEl.value = 1; brtEl.value = 0; gamEl.value = 1.0; syncLabels();
+  if (upload.files[0]) runProcess();
+});
+
+let currentImg = null;
+
+// ─── AI auto-tune: ask Claude for optimal pre-dither parameters ──
+function imageToThumbBase64(img, maxSide) {
+  const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+  const tw = Math.max(1, Math.round(img.width * scale));
+  const th = Math.max(1, Math.round(img.height * scale));
+  const c = document.createElement('canvas');
+  c.width = tw; c.height = th;
+  c.getContext('2d').drawImage(img, 0, 0, tw, th);
+  // JPEG keeps the payload small for the API
+  const dataUrl = c.toDataURL('image/jpeg', 0.85);
+  return { base64: dataUrl.split(',')[1], mediaType: 'image/jpeg' };
+}
+
+function applyTunedParams(p) {
+  // clamp each to the slider's allowed range, then set
+  const setClamped = (el, v) => {
+    const min = parseFloat(el.min), max = parseFloat(el.max);
+    el.value = Math.min(max, Math.max(min, v));
+  };
+  if (typeof p.saturation === 'number') setClamped(satEl, p.saturation);
+  if (typeof p.contrast   === 'number') setClamped(conEl, p.contrast);
+  if (typeof p.brightness === 'number') setClamped(brtEl, p.brightness);
+  if (typeof p.gamma      === 'number') setClamped(gamEl, p.gamma);
+  syncLabels();
+}
+
+async function autoTuneWithAI() {
+  const statusEl = document.getElementById('autoTuneStatus');
+  if (!currentImg) { statusEl.textContent = 'Choose and generate an image first.'; return; }
+
+  statusEl.textContent = '✨ Analyzing image with Claude…';
+  const btn = document.getElementById('autoTuneBtn');
+  btn.disabled = true;
+
+  try {
+    const { base64, mediaType } = imageToThumbBase64(currentImg, 384);
+
+    const sys = "You are a color-grading assistant for a 6-color e-paper display. " +
+      "The panel can ONLY show these 6 colors: black, white, yellow, red, blue, green. " +
+      "After your adjustments the image is error-diffusion/ordered dithered down to those 6 colors. " +
+      "Recommend pre-dither adjustments that make the dithered result look punchy and clear on that limited palette: " +
+      "boost saturation so mid-tone colors snap to the pure primaries instead of fading to white, " +
+      "set contrast and gamma so shadows and highlights are well separated, and only nudge brightness if the photo is clearly over/under exposed. " +
+      "Respond with ONLY a JSON object, no prose, no markdown fences, in exactly this shape: " +
+      '{"saturation": <0..3>, "contrast": <0.5..2>, "brightness": <-60..60>, "gamma": <0.4..2.5>, "reason": "<short note>"}';
+
+    const body = {
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1000,
+      system: sys,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+          { type: "text", text: "Analyze this photo and return the JSON parameters." }
+        ]
+      }]
+    };
+
+    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) throw new Error("API HTTP " + resp.status);
+    const data = await resp.json();
+
+    const text = (data.content || [])
+      .filter(b => b.type === "text")
+      .map(b => b.text)
+      .join("\n")
+      .replace(/```json|```/g, "")
+      .trim();
+
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("No JSON in response");
+    const params = JSON.parse(jsonMatch[0]);
+
+    applyTunedParams(params);
+    if (currentImg) runProcess();
+
+    const r = params.reason ? (" — " + params.reason) : "";
+    statusEl.textContent = `✨ Applied: sat ${parseFloat(satEl.value).toFixed(2)}, ` +
+      `con ${parseFloat(conEl.value).toFixed(2)}, ` +
+      `bri ${brtEl.value}, gam ${parseFloat(gamEl.value).toFixed(2)}${r}`;
+  } catch (err) {
+    statusEl.textContent = "Auto-tune failed: " + err.message + ". You can still adjust sliders manually.";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('autoTuneBtn').addEventListener('click', autoTuneWithAI);
+
+
+// ─── Local Stable Diffusion (Forge/A1111) img2img restyle ────────
+const AI_STYLE_PROMPTS = {
+  pixel: { p: "pixel art, pixelated, 8-bit retro game art, chunky pixels, bold black outlines, flat cel-shaded color regions, vibrant saturated palette, crisp pixel grid", n: "photo, photorealistic, blurry, smooth gradients, jpeg artifacts, soft focus" },
+  anime: { p: "anime illustration, hand-painted, soft watercolor background, gentle warm lighting, expressive faces, clean line art, storybook, studio anime style", n: "photo, photorealistic, 3d render, deformed, extra limbs" },
+  inkwash: { p: "traditional east asian ink wash painting, sumi-e, black ink on rice paper, soft gradient washes, confident brush strokes, negative space, minimal muted color", n: "photo, color photo, vibrant colors, 3d render, digital" },
+  minhwa: { p: "traditional korean minhwa folk painting, bold flat areas of pure red yellow blue green, warm paper background, decorative outlines, naive charming folk art style", n: "photo, photorealistic, muted colors, 3d render" },
+  watercolor: { p: "watercolor painting, visible paper texture, bleeding pigments, soft gradients, light pencil underdrawing, delicate brushwork", n: "photo, photorealistic, hard edges, 3d render, digital art" },
+  popart: { p: "pop art screen print, andy warhol style, high contrast, flat blocks of saturated color, thick black outlines, halftone dots, bold graphic", n: "photo, photorealistic, muted colors, soft gradients" },
+  cartoon: { p: "clean cartoon illustration, cel-shaded, bold uniform outlines, flat color fills, simple shading, bright friendly palette", n: "photo, photorealistic, realistic, 3d render, deformed" },
+  oil: { p: "textured oil painting, thick visible brush strokes, impasto, rich warm classical lighting, painterly", n: "photo, photorealistic, flat, digital art, smooth" },
+  lowpoly: { p: "low poly geometric illustration, flat triangular facets, faceted shading, clean modern vector look", n: "photo, photorealistic, smooth, round shapes, detailed texture" }
+};
+
+const aiStyleEl    = document.getElementById('aiStyle');
+const aiCustomEl   = document.getElementById('aiCustomPrompt');
+const aiModelEl    = document.getElementById('aiModel');
+const aiKeyEl      = document.getElementById('aiApiKey');
+const aiRememberEl = document.getElementById('aiRememberKey');
+const aiStatusEl   = document.getElementById('aiStatus');
+const aiRestyleBtn = document.getElementById('aiRestyleBtn');
+const aiRevertBtn  = document.getElementById('aiRevertBtn');
+
+let originalImg = null;   // keep the un-restyled photo so we can revert
+
+aiStyleEl.addEventListener('change', () => {
+  aiCustomEl.style.display = (aiStyleEl.value === 'custom') ? 'block' : 'none';
+});
+
+// optional: remember key (this browser only)
+try {
+  const saved = window.localStorage ? localStorage.getItem('geminiApiKey') : null;
+  if (saved) { aiKeyEl.value = saved; aiRememberEl.checked = true; }
+} catch (e) {}
+
+// Encode the photo as base64 JPEG, capped to ~1024px to keep input cost low.
+function imageToBase64Jpeg(img, maxSide = 1024) {
+  const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+  const tw = Math.max(1, Math.round(img.width * scale));
+  const th = Math.max(1, Math.round(img.height * scale));
+  const c = document.createElement('canvas');
+  c.width = tw; c.height = th;
+  c.getContext('2d').drawImage(img, 0, 0, tw, th);
+  return c.toDataURL('image/jpeg', 0.92).split(',')[1];
+}
+
+async function restyleWithGemini() {
+  if (!currentImg) { aiStatusEl.textContent = 'Choose an image first.'; return; }
+  const key = aiKeyEl.value.trim();
+  if (!key) { aiStatusEl.textContent = 'Enter your Google AI Studio API key (paid project).'; return; }
+
+  // remember/forget key
+  try {
+    if (window.localStorage) {
+      if (aiRememberEl.checked) localStorage.setItem('geminiApiKey', key);
+      else localStorage.removeItem('geminiApiKey');
+    }
+  } catch (e) {}
+
+  const style = aiStyleEl.value;
+  let prompt = (style === 'custom') ? aiCustomEl.value.trim() : AI_STYLE_PROMPTS[style].p;
+  if (!prompt) { aiStatusEl.textContent = 'Enter a custom prompt.'; return; }
+  // Redraw instruction + downstream constraint for 6-color e-paper
+  const fullPrompt =
+    "Redraw this photo in the following style while keeping the same composition, subjects, " +
+    "poses and faces: " + prompt + ". " +
+    "Output a single image only, around 1024px. Use bold clear shapes, strong outlines and high " +
+    "local contrast with a simple color palette so it survives reduction to a 6-color e-paper display.";
+
+  const model = aiModelEl.value;
+  aiRestyleBtn.disabled = true;
+  aiStatusEl.textContent = '✨ Sending to Gemini… (can take 10–30s)';
+
+  try {
+    if (!originalImg) originalImg = currentImg;
+    const base64 = imageToBase64Jpeg(originalImg, 1024);
+
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent';
+    const body = {
+      contents: [{
+        parts: [
+          { text: fullPrompt },
+          { inline_data: { mime_type: "image/jpeg", data: base64 } }
+        ]
+      }],
+      generationConfig: { responseModalities: ["IMAGE"] }
+    };
+
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify(body)
+    });
+
+    if (!resp.ok) {
+      let detail = "HTTP " + resp.status;
+      try { const e = await resp.json(); if (e.error && e.error.message) detail += " — " + e.error.message; } catch (_) {}
+      if (resp.status === 429) detail += "  (Image models need a PAID project — set up billing for this API key.)";
+      throw new Error(detail);
+    }
+
+    const data = await resp.json();
+    const parts = (((data.candidates || [])[0] || {}).content || {}).parts || [];
+    const imgPart = parts.find(p => p.inlineData || p.inline_data);
+    if (!imgPart) {
+      const txt = parts.filter(p => p.text).map(p => p.text).join(' ');
+      throw new Error(txt ? ("No image returned. Model said: " + txt.slice(0,160)) : "No image in response.");
+    }
+    const blob = imgPart.inlineData || imgPart.inline_data;
+    const mime = blob.mimeType || blob.mime_type || 'image/png';
+
+    // The restyled image becomes the working image; runProcess upscales it to the
+    // target resolution (e.g. 1600x1200) and dithers.
+    const newImg = new Image();
+    newImg.onload = () => {
+      currentImg = newImg;
+      aiRevertBtn.style.display = 'block';
+      aiStatusEl.textContent = '✨ Restyled. Upscaling to target resolution and dithering…';
+      runProcess();
+      aiStatusEl.textContent = '✨ Done. Adjust dithering/style options below as usual.';
+    };
+    newImg.onerror = () => { aiStatusEl.textContent = 'Restyle returned an image that failed to load.'; };
+    newImg.src = 'data:' + mime + ';base64,' + blob.data;
+
+  } catch (err) {
+    let msg = err.message || String(err);
+    if (/Failed to fetch|NetworkError|CORS/i.test(msg)) {
+      msg += "  (If you're in the claude.ai preview, download this file and open it locally — the API is blocked here.)";
+    }
+    aiStatusEl.textContent = "Restyle failed: " + msg;
+  } finally {
+    aiRestyleBtn.disabled = false;
+  }
+}
+
+aiRestyleBtn.addEventListener('click', restyleWithGemini);
+aiRevertBtn.addEventListener('click', () => {
+  if (originalImg) {
+    currentImg = originalImg;
+    aiRevertBtn.style.display = 'none';
+    aiStatusEl.textContent = 'Reverted to original photo.';
+    runProcess();
+  }
+});
+
+
+
+function setDownloadsEnabled(on) {
+  download4bpp.disabled    = !on;
+  downloadY8.disabled      = !on;
+  download4bppBin.disabled = !on;
+  downloadY8Bin.disabled   = !on;
+}
+
+function runProcess() {
+  if (!currentImg) return;
+  const [w, h] = document.getElementById('resolution').value.split(',').map(Number);
+  const dither = document.getElementById('ditherType').value;
+
+  // original preview
+  const oc = origCanvas.getContext('2d');
+  origCanvas.width = currentImg.width; origCanvas.height = currentImg.height;
+  oc.drawImage(currentImg, 0, 0);
+
+  // output preview
+  outCanvas.width = w; outCanvas.height = h;
+  const ctx = outCanvas.getContext('2d');
+  ctx.save();
+  if (document.getElementById('flipH') && document.getElementById('flipH').checked) {
+    ctx.translate(w, 0); ctx.scale(-1, 1);   // horizontal flip for the whole pipeline
+  }
+  ctx.drawImage(currentImg, 0, 0, w, h);
+  ctx.restore();
+  let imgData = ctx.getImageData(0, 0, w, h);
+
+  // pipeline: Art Style -> Enhance -> Blur -> 6-color Dither
+  // 1) art style filter
+  applyArtStyle(imgData, artStyleEl.value);
+
+  // 2) enhance (saturation / contrast / brightness / gamma)
+  enhanceImage(imgData,
+    parseFloat(satEl.value),
+    parseFloat(conEl.value),
+    parseInt(brtEl.value, 10),
+    parseFloat(gamEl.value));
+
+  // 3) optional pre-blur (softens detail -> calmer texture)
+  boxBlur(imgData, parseFloat(blurEl.value));
+
+  // 4) dither
+  const spread = parseInt(ordEl.value, 10);
+  if      (dither === 'floydSerpentine') floydSerpentineDither(imgData);
+  else if (dither === 'floyd')           floydDither(imgData);
+  else if (dither === 'atkinson')        atkinsonDither(imgData);
+  else if (dither === 'stucki')          stuckiDither(imgData);
+  else if (dither === 'jjn')             jjnDither(imgData);
+  else if (dither === 'bayer8')          orderedDither(imgData, BAYER8, spread);
+  else if (dither === 'bayer4')          orderedDither(imgData, BAYER4, spread);
+
+  ctx.putImageData(imgData, 0, 0);
+
+  lastIndices = imageDataToIndexArray(imgData);
+  lastW = w;
+  lastH = h;
+
+  setDownloadsEnabled(true);
+}
+
+processBtn.addEventListener('click', () => {
+  const file = upload.files[0];
+  if (!file) return alert('Please choose an image');
+  const img = new Image();
+  img.onload = () => {
+    currentImg = img;
+    originalImg = img;                       // new upload becomes the original
+    if (typeof aiRevertBtn !== 'undefined' && aiRevertBtn) aiRevertBtn.style.display = 'none';
+    runProcess();
+  };
+  img.src = URL.createObjectURL(file);
+});
+
+document.getElementById('ditherType').addEventListener('change', () => { if (currentImg) runProcess(); });
+document.getElementById('resolution').addEventListener('change', () => { if (currentImg) runProcess(); });
+
+// Build bytes for the requested format
+function buildBytes(is4bpp) {
+  return is4bpp ? pack4bpp(lastIndices, lastW, lastH) : indexToY8(lastIndices);
+}
+function buildArrayName(is4bpp) {
+  const prefix = document.getElementById('arrayNamePrefix').value.trim() || 'image';
+  const suffix = is4bpp ? '_4bpp' : '_y8';
+  return `${prefix}${suffix}_${lastW}x${lastH}`;
+}
+
+function downloadHeader(is4bpp) {
+  if (!lastIndices) return alert('Generate the preview first');
+  const arrayName = buildArrayName(is4bpp);
+  const dither = document.getElementById('ditherType').value;
+  const bytes = buildBytes(is4bpp);
+  const formatDesc = is4bpp
+    ? '4bpp packed (high nibble = left pixel)'
+    : 'Y8 (mapped TCon values, 1 byte per pixel)';
+  const content = uint8ToCHeader(bytes, arrayName, lastW, lastH, formatDesc, dither);
+  downloadBlob(new Blob([content], {type: 'text/plain;charset=utf-8'}), `${arrayName}.h`);
+}
+
+function downloadBin(is4bpp) {
+  if (!lastIndices) return alert('Generate the preview first');
+  const arrayName = buildArrayName(is4bpp);
+  const bytes = buildBytes(is4bpp);
+  downloadBlob(new Blob([bytes], {type: 'application/octet-stream'}), `${arrayName}.bin`);
+}
+
+download4bpp.addEventListener('click',    () => downloadHeader(true));
+downloadY8.addEventListener('click',      () => downloadHeader(false));
+download4bppBin.addEventListener('click', () => downloadBin(true));
+downloadY8Bin.addEventListener('click',   () => downloadBin(false));
+</script>
+</body>
+</html>
