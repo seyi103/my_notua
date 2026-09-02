@@ -377,24 +377,24 @@ class _IntervalTile extends StatelessWidget {
     const presets = [1, 5, 10, 30];
     final values = {...presets, value}.toList()..sort();
     return Container(
-    decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(18),
-      boxShadow: const [BoxShadow(color: Color(0x0a000000), blurRadius: 14)],
-    ),
-    child: ListTile(
-      title: const Text('슬라이드 전환'),
-      trailing: DropdownButton<int>(
-        value: value,
-        underline: const SizedBox(),
-        items: values
-            .map((v) => DropdownMenuItem(value: v, child: Text('$v분마다')))
-            .toList(),
-        onChanged: (v) {
-          if (v != null) onChanged(v);
-        },
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: const [BoxShadow(color: Color(0x0a000000), blurRadius: 14)],
       ),
-    ),
+      child: ListTile(
+        title: const Text('슬라이드 전환'),
+        trailing: DropdownButton<int>(
+          value: value,
+          underline: const SizedBox(),
+          items: values
+              .map((v) => DropdownMenuItem(value: v, child: Text('$v분마다')))
+              .toList(),
+          onChanged: (v) {
+            if (v != null) onChanged(v);
+          },
+        ),
+      ),
     );
   }
 }
